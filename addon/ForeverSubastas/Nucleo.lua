@@ -1022,6 +1022,13 @@ local function TooltipReceta(fila, r, conocida)
             precio and Moneda(precio * cant) or (ROJO .. "sin precio" .. FIN), 1, 1, 1, 1, 1, 1)
     end
     GameTooltip:AddDoubleLine("Coste total", Moneda(r[R_COSTE]), 1, 1, 1, 1, 1, 1)
+    local pjr = Personaje()
+    local col = pjr.subir and pjr.subir[r[R_PROF]]
+    local dato = col and col.items[r[R_ITEM]]
+    if dato and dato.req then
+        local falta = dato.ok == false
+        GameTooltip:AddDoubleLine("Necesitas", dato.req, 1, 1, 1, falta and 1 or 0.6, falta and 0.25 or 1, falta and 0.25 or 0.6)
+    end
     local textoVenta = "Venta neta (tras 5% de la subasta)"
     if r[R_DONDE] == "vendedor" then textoVenta = "Venta al vendedor (mejor que la subasta)" end
     if r[R_DONDE] == "mercado" then textoVenta = textoVenta .. GRIS .. " · precio de mercado" .. FIN end
