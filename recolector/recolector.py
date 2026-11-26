@@ -123,8 +123,8 @@ class Api:
         )
         return datos["access_token"]
 
-    def get(self, ruta: str, locale: str = "en_GB") -> tuple[dict, dict]:
-        consulta = urllib.parse.urlencode({"namespace": self.ns, "locale": locale})
+    def get(self, ruta: str, locale: str = "en_GB", ns: str | None = None) -> tuple[dict, dict]:
+        consulta = urllib.parse.urlencode({"namespace": ns or self.ns, "locale": locale})
         return _peticion(f"{self.base}{ruta}?{consulta}",
                          cabeceras={"Authorization": f"Bearer {self.token}"})
 
