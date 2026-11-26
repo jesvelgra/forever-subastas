@@ -1,0 +1,63 @@
+name: Recolector de subastas
+
+on:
+  schedule:
+    - cron: "23 * * * *"   # cada hora, en el minuto 23 (hora UTC)
+  workflow_dispatch:        # permite lanzarlo a mano desde la pestaña Actions
+
+permissions:
+  contents: write
+
+concurrency:
+  group: recolector
+  cancel-in-progress: false
+
+jobs:
+  recoger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Recuperar la descarga anterior
+        uses: actions/cache/restore@v4
+        with:
+          path: estado
+          key: estado-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: estado-
+
+      - name: Descargar y resumir las subastas
+        env:
+          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+          REGION: ${{ vars.REGION || 'eu' }}
+          FACCION: ${{ vars.FACCION || 'Alliance' }}
+          CASAS: ${{ vars.CASAS }}
+        run: python recolector/recolector.py
+
+      - name: Guardar esta descarga para la próxima hora
+        if: always() && hashFiles('estado/**') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: estado
+          key: estado-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Subir los datos al repositorio
+        run: |
+          git config user.name "recolector"
+          git config user.email "recolector@users.noreply.github.com"
+          git add datos
+          if git diff --cached --quiet; then
+            echo "Sin datos nuevos"
+            exit 0
+          fi
+          git commit -q -m "Subastas $(date -u +'%Y-%m-%d %H:%M') UTC"
+          for intento in 1 2 3; do
+            git pull -q --rebase && git push -q && exit 0
+            sleep 5
+          done
+          exit 1
