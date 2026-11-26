@@ -433,6 +433,10 @@ def main() -> int:
             "casas": {str(k): v for k, v in sorted(casas.items())}}
     (dir_datos / "casas.json").write_text(json.dumps(mapa, ensure_ascii=False, indent=1), "utf-8")
 
+    try:
+        buscar = json.loads(os.environ.get("BUSCAR") or "[]")
+    except ValueError:
+        buscar = []
     errores = 0
     procesadas = 0
     ahora = datetime.now(timezone.utc).replace(microsecond=0)
@@ -451,6 +455,14 @@ def main() -> int:
             subastas = datos.get("auctions")
             if not isinstance(subastas, list) or not subastas:
                 continue
+            for b in buscar:
+                encontradas = [s for s in subastas
+                               if s.get("item", {}).get("id") == b[0]
+                               and (s.get("unit_price") or s.get("buyout", 0) // max(1, s.get("quantity", 1))) == b[1]
+                               and s.get("quantity", 0) <= b[2]]
+                if encontradas:
+                    print(f"  BUSCAR: casa {casa} tiene {len(encontradas)} subasta(s) de {b[0]} a {b[1]} "
+                          f"(cantidades {[s.get('quantity') for s in encontradas]})")
             ts = _fecha_cabecera(cab) or ahora
             r = procesar_feed(ts=ts, casa=casa, tipo=tipo, subastas_api=subastas,
                               dir_datos=dir_datos, dir_estado=dir_estado)

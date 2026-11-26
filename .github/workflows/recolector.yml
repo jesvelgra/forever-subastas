@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "23 * * * *"   # cada hora, en el minuto 23 (hora UTC)
   workflow_dispatch:        # permite lanzarlo a mano desde la pestaña Actions
+    inputs:
+      buscar:
+        description: "Diagnóstico: lista JSON de [item, precio_unidad, cantidad] a localizar"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -38,6 +43,7 @@ jobs:
           FACCION: ${{ vars.FACCION || 'Alliance' }}
           # 110 y 111 son las dos grandes de la Alianza (JcJ y Normal); 119 y 123, las de rol.
           CASAS: ${{ vars.CASAS || '110,111' }}
+          BUSCAR: ${{ inputs.buscar }}
         run: python recolector/recolector.py
 
       - name: Guardar esta descarga para la próxima hora
