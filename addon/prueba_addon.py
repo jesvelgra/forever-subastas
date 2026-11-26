@@ -107,6 +107,30 @@ StaticPopup_Show = function(nombre, a, b, data)
   d.OnAccept(popup, data)
   POPUP = nombre
 end
+-- QuestieDB
+ItemDB = {
+  GetAllIds = function() return { 9001, 9002 } end,
+  class = function(id) return 9 end,
+  teachesSpell = function(id) return id == 9001 and 2332 or nil end,
+  vendors = function(id) return id == 9001 and { 500, 501 } or nil end,
+  npcDrops = function(id) return nil end,
+  questRewards = function(id) return nil end,
+}
+NpcDB = {
+  name = function(id) return id == 500 and "Alquimista Mallory" or "Vendedor de la Horda" end,
+  spawns = function(id) return { [1519] = { { 50.2, 60.7 } } } end,
+  zoneID = function(id) return 1519 end,
+  friendlyToFaction = function(id) return id == 500 and "AH" or "H" end,
+}
+QuestDB = { name = function(id) return "Una misión" end }
+LibQuestieDB = { EraToForever = function(a, x, y) return x + 1, y + 1 end,
+  Support = { Get = function() return { private = { areaIdToUiMapId = { [1519] = 84 } } } end } }
+UnitFactionGroup = function() return "Alliance" end
+C_Map = { GetAreaInfo = function(a) return "Ventormenta" end, SetUserWaypoint = function() WAYPOINT = true end }
+C_SuperTrack = { SetSuperTrackedUserWaypoint = function() end }
+UiMapPoint = { CreateFromCoordinates = function() return {} end }
+SHIFT = false
+IsShiftKeyDown = function() return SHIFT end
 -- Auctionator
 LISTA_AUCTIONATOR = nil
 Auctionator = { API = { v1 = {
@@ -159,6 +183,9 @@ ev._scripts.OnEvent(ev, "TRAINER_SHOW")
 v.pestanas.subir._scripts.OnClick(v.pestanas.subir)
 SUBIR_APRENDER = v.filas[1].c[7]._texto .. " / " .. tostring(v.filas[2].c[7]._texto)
 v.filas[2]._scripts.OnEnter(v.filas[2])
+SHIFT = true
+v.filas[2]._scripts.OnClick(v.filas[2], "LeftButton")
+SHIFT = false
 -- Cambio de color de la receta que se está subiendo (amarilla -> verde)
 v.filas[1]._scripts.OnClick(v.filas[1], "LeftButton")
 local viejo = C_TradeSkillUI.GetRecipeInfo
@@ -231,6 +258,9 @@ def main() -> int:
     assert any("Cantidad sugerida" in l for l in lineas), "falta la cantidad sugerida"
     assert any("Necesitas | Rueca" in l for l in lineas), "falta la herramienta necesaria"
     assert any("Instructor | Lilyssia" in l for l in lineas), "falta dónde se aprende"
+    assert any("Lo vende | Alquimista Mallory (Ventormenta 51, 62)" in l for l in lineas), "falta el vendedor del patrón"
+    assert not any("Vendedor de la Horda" in l for l in lineas), "no debe mostrar vendedores de la Horda"
+    assert g.WAYPOINT is True, "no marcó el mapa con mayúsculas + clic"
     chat = list(g.CHAT.values())
     assert any("ya está" in m and "verde" in m for m in chat), "no avisó del cambio a verde"
     assert g.FILAS_VENDER == 2, "Qué vender debería listar 2 objetos (el ligado no)"

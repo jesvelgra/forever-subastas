@@ -50,7 +50,7 @@ def enlazar_patrones(patrones: dict, recetas: dict) -> int:
         for rid in candidatas:
             recetas[rid]["patron"] = iid
             if pat.get("nivel"):
-                recetas[rid]["nivel"] = pat["nivel"]
+                recetas[rid]["nivel_req"] = pat["nivel"]
             n += 1
     return n
 

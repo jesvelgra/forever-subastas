@@ -440,6 +440,16 @@ def precio_venta(item: int, items: dict) -> tuple[int | None, str]:
     return (p, "mercado") if p else (None, "")
 
 
+def nivel_requerido(r: dict) -> int | None:
+    """Nivel de profesión para aprender la receta (del patrón). Ojo: "nivel" es el id del tramo de habilidad,
+    salvo en ficheros antiguos donde el enlace con el patrón lo sobrescribía con el nivel."""
+    if r.get("nivel_req"):
+        return r["nivel_req"]
+    if r.get("patron") and isinstance(r.get("nivel"), int) and r["nivel"] <= 500:
+        return r["nivel"]
+    return None
+
+
 def calcular_recetas(estaticos: dict, items: dict, vendedor: dict[int, int]) -> list[dict]:
     nombres_prof = nombres_profesiones(estaticos)
     fichas = estaticos.get("items", {})
@@ -472,7 +482,7 @@ def calcular_recetas(estaticos: dict, items: dict, vendedor: dict[int, int]) -> 
             "coste": round(coste), "venta": round(venta), "beneficio": round(venta - coste),
             "vd": info.get("vd"), "donde": donde, "falta": falta, "reag": reag,
             "sh": info.get("sh"), "sd": info.get("sd"),
-            "patron": r.get("patron"), "nivel": r.get("nivel"),
+            "patron": r.get("patron"), "nivel": nivel_requerido(r),
         })
     # Primero las recetas con todos los precios conocidos.
     salida.sort(key=lambda x: (not x["falta"], x["beneficio"]), reverse=True)

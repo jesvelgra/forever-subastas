@@ -265,7 +265,7 @@ local function LeerRecetasConocidas()
             end
             local dif = Dificultad(info)
             if dif then
-                local dato = { d = dif, a = info.learned and true or false, s = info.numSkillUps or 1 }
+                local dato = { d = dif, a = info.learned and true or false, s = info.numSkillUps or 1, rid = rid }
                 if type(info.maxTrivialLevel) == "number" and info.maxTrivialLevel > 0 then dato.g = info.maxTrivialLevel end
                 -- Herramientas o puestos necesarios (rueca, telar, yunque...).
                 if T.GetRecipeRequirements then
@@ -803,7 +803,137 @@ local function SinFormato(texto)
     return (texto or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|T.-|t", ""):gsub("|n", " · "):gsub("\n", " · ")
 end
 
--- Devuelve: textoCorto, lineasTooltip, nivelNecesario
+---------------------------------------------------------------------------
+-- Dónde conseguir patrones y recetas (con QuestieDB, si está instalado)
+---------------------------------------------------------------------------
+
+local indicePatrones
+-- hechizo de receta -> { objetos que la enseñan }
+local function IndicePatrones()
+    if indicePatrones ~= nil then return indicePatrones or nil end
+    indicePatrones = false
+    local IDB = _G.ItemDB
+    if not (IDB and IDB.GetAllIds and IDB.teachesSpell and IDB.class) then return nil end
+    local ok, ids = pcall(IDB.GetAllIds)
+    if not ok or type(ids) ~= "table" then return nil end
+    local idx = {}
+    for _, id in ipairs(ids) do
+        local okc, clase = pcall(IDB.class, id)
+        if okc and clase == 9 then
+            local okt, hechizo = pcall(IDB.teachesSpell, id)
+            if okt and type(hechizo) == "number" then
+                idx[hechizo] = idx[hechizo] or {}
+                table.insert(idx[hechizo], id)
+            end
+        end
+    end
+    indicePatrones = idx
+    return idx
+end
+
+local function NombreZona(areaId)
+    if not areaId then return "?" end
+    if C_Map and C_Map.GetAreaInfo then
+        local ok, nombre = pcall(C_Map.GetAreaInfo, areaId)
+        if ok and nombre then return nombre end
+    end
+    return "zona " .. areaId
+end
+
+-- Nombre, zona y coordenadas (de Forever) de un PNJ, o nil si es de la otra facción.
+local function LugarPnj(npc)
+    local NDB = _G.NpcDB
+    if not NDB then return nil end
+    local faccion = UnitFactionGroup and UnitFactionGroup("player")
+    local okf, amigo = pcall(NDB.friendlyToFaction, npc)
+    if okf and amigo then
+        if faccion == "Alliance" and amigo == "H" then return nil end
+        if faccion == "Horde" and amigo == "A" then return nil end
+    end
+    local _, nombre = pcall(NDB.name, npc)
+    local areaId, x, y
+    local oks, spawns = pcall(NDB.spawns, npc)
+    if oks and type(spawns) == "table" then
+        for zona, lista in pairs(spawns) do
+            if type(lista) == "table" and lista[1] then
+                areaId, x, y = zona, lista[1][1], lista[1][2]
+                break
+            end
+        end
+    end
+    if not areaId then
+        local okz, z = pcall(NDB.zoneID, npc)
+        if okz then areaId = z end
+    end
+    if areaId and x and x >= 0 and LibQuestieDB and LibQuestieDB.EraToForever then
+        local ok, fx, fy = pcall(LibQuestieDB.EraToForever, areaId, x, y)
+        if ok and fx then x, y = fx, fy end
+    end
+    return { nombre = nombre or ("PNJ " .. npc), zona = NombreZona(areaId), areaId = areaId,
+        x = x and x >= 0 and x or nil, y = y and y >= 0 and y or nil }
+end
+
+local function TextoLugar(l)
+    if l.x then return string.format("%s (%s %.0f, %.0f)", l.nombre, l.zona, l.x, l.y) end
+    return l.nombre .. " (" .. l.zona .. ")"
+end
+
+-- Vendedores, enemigos que lo sueltan y misiones que lo dan como recompensa.
+local function FuentesObjeto(item)
+    local IDB = _G.ItemDB
+    if not IDB then return nil end
+    local f = { vende = {}, suelta = {}, mision = {} }
+    local ok, vendedores = pcall(IDB.vendors, item)
+    if ok and type(vendedores) == "table" then
+        for _, npc in ipairs(vendedores) do
+            local l = LugarPnj(npc)
+            if l then table.insert(f.vende, l) end
+            if #f.vende >= 3 then break end
+        end
+    end
+    local okd, sueltan = pcall(IDB.npcDrops, item)
+    if okd and type(sueltan) == "table" then
+        for _, npc in ipairs(sueltan) do
+            local l = LugarPnj(npc)
+            if l then table.insert(f.suelta, l) end
+            if #f.suelta >= 3 then break end
+        end
+        f.totalSuelta = #sueltan
+    end
+    local okq, misiones = pcall(IDB.questRewards, item)
+    if okq and type(misiones) == "table" and _G.QuestDB then
+        for _, q in ipairs(misiones) do
+            local _, nombre = pcall(_G.QuestDB.name, q)
+            table.insert(f.mision, nombre or ("misión " .. q))
+            if #f.mision >= 2 then break end
+        end
+    end
+    return f
+end
+
+local function MarcarEnMapa(lugar)
+    if not (lugar and lugar.x and lugar.areaId and C_Map and C_Map.SetUserWaypoint and UiMapPoint) then return false end
+    local mapa
+    local ok, zdb = pcall(function() return LibQuestieDB.Support.Get("ZoneDB") end)
+    if ok and zdb and zdb.private and zdb.private.areaIdToUiMapId then mapa = zdb.private.areaIdToUiMapId[lugar.areaId] end
+    if not mapa then return false end
+    local okw = pcall(function()
+        C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(mapa, lugar.x / 100, lugar.y / 100))
+        if C_SuperTrack and C_SuperTrack.SetSuperTrackedUserWaypoint then C_SuperTrack.SetSuperTrackedUserWaypoint(true) end
+    end)
+    if okw then Imprimir("marcado en el mapa: " .. TextoLugar(lugar)) end
+    return okw
+end
+FS.MarcarEnMapa = MarcarEnMapa
+
+-- Nivel necesario para aprender una receta, si se sabe (instructor visitado o patrón con requisito).
+local function NivelAprender(r)
+    local _, db = Personaje()
+    local inst = db.aprender and db.aprender[r[R_NOMBRE]]
+    return (inst and inst.nivel) or r[R_NIVEL]
+end
+
+-- Devuelve: textoCorto, lineasTooltip, nivelNecesario, lugarParaElMapa
 local function InfoAprender(r, dato)
     local _, db = Personaje()
     local lineas = {}
@@ -828,6 +958,40 @@ local function InfoAprender(r, dato)
             if not corto then corto = "patrón " .. MonedaCorta(precio) end
         end
     end
+    -- Patrones que enseñan la receta: el de nuestros datos y los que conozca QuestieDB.
+    local patrones, vistos = {}, {}
+    if patron then table.insert(patrones, patron); vistos[patron] = true end
+    local idx = dato and dato.rid and IndicePatrones()
+    if idx and idx[dato.rid] then
+        for _, id in ipairs(idx[dato.rid]) do
+            if not vistos[id] then table.insert(patrones, id); vistos[id] = true end
+        end
+    end
+    local lugarMapa
+    for k = 1, math.min(2, #patrones) do
+        local id = patrones[k]
+        if id ~= patron then table.insert(lineas, { "Se aprende con", NombreObjeto(id) }) end
+        local f = FuentesObjeto(id)
+        if f then
+            for _, l in ipairs(f.vende) do
+                table.insert(lineas, { "   Lo vende", TextoLugar(l) })
+                lugarMapa = lugarMapa or l
+            end
+            if #f.vende > 0 then corto = "vende " .. f.vende[1].nombre end
+            for _, l in ipairs(f.suelta) do table.insert(lineas, { "   Lo suelta", TextoLugar(l) }) end
+            if f.totalSuelta and f.totalSuelta > #f.suelta then
+                table.insert(lineas, { "   ", string.format("y %d enemigos más", f.totalSuelta - #f.suelta) })
+            end
+            if #f.suelta > 0 and not corto then corto = "botín" end
+            for _, q in ipairs(f.mision) do table.insert(lineas, { "   Recompensa de", q }) end
+            if #f.mision > 0 and not corto then corto = "misión" end
+        end
+    end
+    if #patrones == 0 and not inst and not (dato and dato.f) then
+        corto = "instructor?"
+        table.insert(lineas, { "Sin patrón conocido", "seguramente la enseña el instructor" })
+        table.insert(lineas, { GRIS .. "Si en el instructor no aparece, en su ventana abre Configuración y marca \"No disponible\"." .. FIN, "" })
+    end
     if dato and dato.f then
         table.insert(lineas, { "Fuente según el juego", SinFormato(dato.f) })
         if not corto then
@@ -839,7 +1003,7 @@ local function InfoAprender(r, dato)
             else corto = "ver fuente" end
         end
     end
-    return corto or "aprender", lineas, nivel
+    return corto or "aprender", lineas, nivel, lugarMapa
 end
 
 local function NombreRequisito(dato)
@@ -904,10 +1068,15 @@ local function ListaSubir()
             -- Por objeto fabricado; por nombre solo si el juego no dio los objetos (hay recetas con el mismo nombre).
             local c = colores.items[r[R_ITEM]]
             if not c and not next(colores.items) then c = colores.nombres[r[R_NOMBRE]] end
-            local _, _, nivelReq = InfoAprender(r, c)
-            if c and not c.a and nivelReq and colores.nivel and nivelReq > colores.nivel then
-                ocultas = ocultas + 1
-                c = nil
+            local nivelReq = NivelAprender(r)
+            if c and not c.a and colores.nivel then
+                local muyAlta = nivelReq and nivelReq > colores.nivel
+                -- Sin nivel conocido: si se vuelve gris más de 60 puntos por encima, casi seguro aún no se puede aprender.
+                if not nivelReq and c.g and c.g - colores.nivel > 60 then muyAlta = true end
+                if muyAlta then
+                    ocultas = ocultas + 1
+                    c = nil
+                end
             end
             if c and c.d and c.d < 3 then
                 -- Lo que recuperas: la venta neta si se vende, si no lo que paga el vendedor.
@@ -1081,6 +1250,8 @@ local function AlEntrarFila(fila)
             GameTooltip:AddLine(" ")
             GameTooltip:AddLine(NARANJA .. "Aún no la conoces. Cómo aprenderla:" .. FIN)
             for _, l in ipairs(lineas) do GameTooltip:AddDoubleLine(l[1], l[2], 1, 1, 1, 1, 1, 1) end
+            local _, _, _, lugar = InfoAprender(x.r, x.dato)
+            if lugar then GameTooltip:AddLine(VERDE .. "Mayúsculas + clic: marcarlo en el mapa" .. FIN) end
             if #lineas == 0 then
                 GameTooltip:AddLine(GRIS .. "Visita a tu instructor de " .. (D.p[x.prof] or "la profesión") ..
                     " una vez y el addon apuntará qué enseña, a qué nivel y cuánto cuesta." .. FIN, 1, 1, 1, true)
@@ -1100,6 +1271,11 @@ local function AlPulsarFila(fila)
     if estado.modo == "fabricar" then
         PedirVecesYCrearLista(x.r)
     elseif estado.modo == "subir" then
+        if IsShiftKeyDown and IsShiftKeyDown() and not x.aprendida then
+            local _, _, _, lugar = InfoAprender(x.r, x.dato)
+            if not MarcarEnMapa(lugar) then Imprimir("no tengo la posición de quien enseña esta receta.") end
+            return
+        end
         local n, texto = SugerirCantidad(x)
         FS.subiendo = { prof = x.prof, item = x.r[R_ITEM], nombre = x.r[R_NOMBRE], dif = x.dif }
         PedirVecesYCrearLista(x.r, math.max(1, n), texto)
@@ -1228,7 +1404,8 @@ local function Refrescar()
             c[4]:SetText(MonedaCorta(x.recuperas))
             c[5]:SetText(x.porPunto <= 0 and (VERDE .. "gana " .. FIN .. MonedaCorta(-x.porPunto)) or MonedaCorta(x.porPunto))
             c[6]:SetText(Ventas(r[R_VD]))
-            c[7]:SetText(x.aprendida and "" or (NARANJA .. (InfoAprender(r, x.dato)) .. FIN))
+            local corto = x.aprendida and "" or (InfoAprender(r, x.dato))
+            c[7]:SetText(x.aprendida and "" or (NARANJA .. corto .. FIN))
             fila:Show()
         elseif modo == "vender" then
             local d = D.i and D.i[x.id]

@@ -134,6 +134,13 @@ class PruebasPrecioRecomendado(unittest.TestCase):
             self.assertEqual(res["mercado"]["curvas"]["c"][1], 90)
 
 
+class PruebasNivelRequerido(unittest.TestCase):
+    def test_no_confunde_el_tramo_con_el_nivel(self):
+        self.assertIsNone(a.nivel_requerido({"nivel": 2937}))
+        self.assertEqual(a.nivel_requerido({"nivel": 80, "patron": 2601}), 80)
+        self.assertEqual(a.nivel_requerido({"nivel": 2948, "patron": 1, "nivel_req": 165}), 165)
+
+
 class PruebasTendencia(unittest.TestCase):
     def test_tendencia_7d_sube_y_aguanta_dias_raros(self):
         from datetime import date
