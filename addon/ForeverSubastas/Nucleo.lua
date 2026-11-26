@@ -46,6 +46,19 @@ local function Moneda(cobre)
 end
 FS.Moneda = Moneda
 
+-- Para las columnas de la ventana: sin cobre a partir de 1 oro y solo oro a partir de 100.
+local function MonedaCorta(cobre)
+    if cobre == nil then return Moneda(nil) end
+    local abs = math.abs(cobre)
+    local signo = cobre < 0 and -1 or 1
+    if abs >= 1000000 then
+        abs = math.floor(abs / 10000 + 0.5) * 10000
+    elseif abs >= 10000 then
+        abs = math.floor(abs / 100 + 0.5) * 100
+    end
+    return Moneda(signo * abs)
+end
+
 local function Hora(h)
     return string.format("%02d-%02d h", h, (h + 1) % 24)
 end
@@ -864,30 +877,30 @@ local function Refrescar()
             local di = D.i and D.i[r[R_ITEM]]
             c[1]:SetText(nombre)
             c[2]:SetText(GRIS .. (D.p[r[R_PROF]] or "") .. FIN)
-            c[3]:SetText(Moneda(r[R_BENEF]))
+            c[3]:SetText(MonedaCorta(r[R_BENEF]))
             c[4]:SetText(Ventas(r[R_VD]))
             c[5]:SetText(TendenciaCorta(di and di[I_T7]))
-            c[6]:SetText(Moneda(r[R_COSTE]))
-            c[7]:SetText(Moneda(r[R_VENTA]))
+            c[6]:SetText(MonedaCorta(r[R_COSTE]))
+            c[7]:SetText(MonedaCorta(r[R_VENTA]))
             fila:Show()
         elseif modo == "vender" then
             local d = D.i and D.i[x.id]
             local colores = { ya = VERDE, hora = AMARILLO, espera = NARANJA, vendedor = BLANCO, nosevende = ROJO }
             c[1]:SetText(BLANCO .. NombreObjeto(x.id) .. FIN)
             c[2]:SetText(tostring(x.cant))
-            c[3]:SetText(Moneda(x.c.precio))
+            c[3]:SetText(MonedaCorta(x.c.precio))
             c[4]:SetText(x.c.prob and (x.c.prob .. "%") or (GRIS .. "-" .. FIN))
-            c[5]:SetText(Moneda(x.total))
+            c[5]:SetText(MonedaCorta(x.total))
             c[6]:SetText(Ventas(d and d[I_VD]))
             c[7]:SetText((colores[x.c.accion] or "") .. x.c.texto .. FIN)
             fila:Show()
         else
             c[1]:SetText(BLANCO .. (x.n or NombreObjeto(x.item)) .. FIN)
             c[2]:SetText(x.publ > 0 and string.format("%d de %d", x.vend, x.publ) or tostring(x.vend))
-            c[3]:SetText(Moneda(x.ingresos))
+            c[3]:SetText(MonedaCorta(x.ingresos))
             c[4]:SetText(tostring(x.comp))
-            c[5]:SetText(Moneda(x.gastos))
-            c[6]:SetText(Moneda(x.balance))
+            c[5]:SetText(MonedaCorta(x.gastos))
+            c[6]:SetText(MonedaCorta(x.balance))
             c[7]:SetText(x.ultima and date and date("%d/%m %H:%M", x.ultima) or (GRIS .. "-" .. FIN))
             fila:Show()
         end
