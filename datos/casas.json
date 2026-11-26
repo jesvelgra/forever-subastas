@@ -1,0 +1,158 @@
+{
+ "region": "eu",
+ "conjuntos": [
+  {
+   "id": 1,
+   "nombre": ""
+  },
+  {
+   "id": 15,
+   "nombre": ""
+  },
+  {
+   "id": 3,
+   "nombre": ""
+  },
+  {
+   "id": 2,
+   "nombre": ""
+  }
+ ],
+ "casas": {
+  "110": {
+   "nombre": "Alliance Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "111": {
+   "nombre": "Alliance Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "112": {
+   "nombre": "Alliance Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "113": {
+   "nombre": "Horde Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "114": {
+   "nombre": "Horde Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "115": {
+   "nombre": "Horde Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "116": {
+   "nombre": "Blackwater Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "117": {
+   "nombre": "Blackwater Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "118": {
+   "nombre": "Blackwater Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "119": {
+   "nombre": "Alliance Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "120": {
+   "nombre": "Horde Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "121": {
+   "nombre": "Blackwater Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "123": {
+   "nombre": "Alliance Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "124": {
+   "nombre": "Horde Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  },
+  "125": {
+   "nombre": "Blackwater Auction House",
+   "conjuntos": [
+    1,
+    15,
+    3,
+    2
+   ]
+  }
+ }
+}
