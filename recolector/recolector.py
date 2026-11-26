@@ -44,6 +44,19 @@ HORAS_MAX_RESTANTES = {
     "VERY_LONG": 48.0,
 }
 
+# Tramos de precio de una subasta respecto al precio p10 del objeto cuando apareció.
+# Sirven para medir qué probabilidad de venta tiene poner algo un X % más caro.
+TRAMOS = [0.95, 1.0, 1.05, 1.1, 1.2, 1.35, 1.5, 2.0]  # límite superior de cada tramo; el último tramo es "más de 2"
+COLUMNAS_TRAMOS = ["ts", "casa", "tipo", "item", "tramo", "vendidas", "caducadas"]
+
+
+def tramo(ratio: float) -> int:
+    for i, limite in enumerate(TRAMOS):
+        if ratio <= limite + 1e-9:
+            return i
+    return len(TRAMOS)
+
+
 COLUMNAS = [
     "ts",          # momento de la descarga (UTC, ISO 8601)
     "casa",        # id de la casa de subastas
@@ -223,8 +236,8 @@ def _percentil(precios_cant: list[tuple[int, int]], fraccion: float) -> int:
 def resumir(actual: dict[int, tuple]) -> dict[int, dict]:
     """Resumen de precios por objeto."""
     por_item: dict[int, list[tuple[int, int]]] = {}
-    for item, cant, unidad, _ in actual.values():
-        por_item.setdefault(item, []).append((unidad, cant))
+    for t in actual.values():
+        por_item.setdefault(t[0], []).append((t[2], t[1]))
     resumen = {}
     for item, lista in por_item.items():
         lista.sort()
@@ -240,7 +253,7 @@ def resumir(actual: dict[int, tuple]) -> dict[int, dict]:
 
 
 def estimar_movimientos(anterior: dict[int, tuple], actual: dict[int, tuple],
-                        horas: float) -> dict[int, dict]:
+                        horas: float, tramos: dict | None = None) -> dict[int, dict]:
     """Compara dos descargas y estima ventas por objeto.
 
     - Un lote que sigue ahí con menos unidades: alguien ha comprado parte
@@ -253,6 +266,9 @@ def estimar_movimientos(anterior: dict[int, tuple], actual: dict[int, tuple],
         * si era más cara, puede ser una venta o alguien que la retiró para
           bajar el precio: cuenta como "retirada".
     - Una subasta que desaparece y sí pudo caducar cuenta como "caducada".
+
+    Si se pasa `tramos`, acumula ahí {(item, tramo): [vendidas, caducadas]} según el
+    precio relativo que tenía cada subasta al aparecer (5.º campo de la tupla).
     """
     mov: dict[int, dict] = {}
 
@@ -260,18 +276,28 @@ def estimar_movimientos(anterior: dict[int, tuple], actual: dict[int, tuple],
         return mov.setdefault(item, {"nuevas": 0, "vend_seg": 0, "vend_prob": 0,
                                      "valor_vend": 0, "retiradas": 0, "caducadas": 0})
 
+    def anotar(t: tuple, vendidas: int, caducadas: int):
+        if tramos is None or len(t) < 5 or t[4] is None:
+            return
+        clave = (t[0], tramo(t[4]))
+        acc = tramos.setdefault(clave, [0, 0])
+        acc[0] += vendidas
+        acc[1] += caducadas
+
     minimo_actual: dict[int, int] = {}
-    for item, _, unidad, _ in actual.values():
+    for t in actual.values():
+        item, unidad = t[0], t[2]
         if item not in minimo_actual or unidad < minimo_actual[item]:
             minimo_actual[item] = unidad
 
     # 1) Compras parciales y precio más alto al que se ha comprado algo.
     umbral_compra: dict[int, int] = {}
     desaparecidas = []
-    for id_subasta, (item, cant, unidad, tl) in anterior.items():
+    for id_subasta, t in anterior.items():
+        item, cant, unidad = t[0], t[1], t[2]
         ahora = actual.get(id_subasta)
         if ahora is None:
-            desaparecidas.append((item, cant, unidad, tl))
+            desaparecidas.append(t)
             continue
         if ahora[1] < cant:
             vendidas = cant - ahora[1]
@@ -279,25 +305,29 @@ def estimar_movimientos(anterior: dict[int, tuple], actual: dict[int, tuple],
             f["vend_seg"] += vendidas
             f["valor_vend"] += vendidas * unidad
             umbral_compra[item] = max(umbral_compra.get(item, 0), unidad)
+            anotar(t, vendidas, 0)
 
     # 2) Subastas desaparecidas.
-    for item, cant, unidad, tl in desaparecidas:
+    for t in desaparecidas:
+        item, cant, unidad, tl = t[0], t[1], t[2], t[3]
         f = fila(item)
         pudo_caducar = HORAS_MAX_RESTANTES.get(tl, 48.0) <= horas
         if pudo_caducar:
             f["caducadas"] += cant
+            anotar(t, 0, cant)
             continue
         umbral = max(minimo_actual.get(item, 0), umbral_compra.get(item, 0))
         if item not in minimo_actual or unidad <= umbral:
             f["vend_prob"] += cant
             f["valor_vend"] += cant * unidad
+            anotar(t, cant, 0)
         else:
             f["retiradas"] += cant
 
     # 3) Unidades nuevas a la venta.
-    for id_subasta, (item, cant, _, _) in actual.items():
+    for id_subasta, t in actual.items():
         if id_subasta not in anterior:
-            fila(item)["nuevas"] += cant
+            fila(t[0])["nuevas"] += t[1]
 
     return mov
 
@@ -350,10 +380,10 @@ def filas_salida(ts: datetime, casa: int, tipo: str, resumen: dict[int, dict],
     return filas
 
 
-def escribir_csv(ruta: Path, filas: list[dict]) -> None:
+def escribir_csv(ruta: Path, filas: list[dict], columnas: list[str] | None = None) -> None:
     ruta.parent.mkdir(parents=True, exist_ok=True)
     texto = io.StringIO()
-    escritor = csv.DictWriter(texto, fieldnames=COLUMNAS, lineterminator="\n")
+    escritor = csv.DictWriter(texto, fieldnames=columnas or COLUMNAS, lineterminator="\n")
     escritor.writeheader()
     escritor.writerows(filas)
     # mtime=0 para que el mismo contenido dé siempre el mismo fichero.
@@ -374,6 +404,22 @@ def procesar_feed(*, ts: datetime, casa: int, tipo: str, subastas_api: list[dict
 
     horas = None
     movimientos: dict[int, dict] = {}
+    tramos: dict = {}
+    resumen = resumir(actual)
+
+    # Precio relativo de cada subasta cuando apareció (se conserva mientras siga a la venta).
+    anteriores = previo["subastas"] if previo else {}
+    for id_subasta, t in actual.items():
+        prev = anteriores.get(id_subasta)
+        if prev is not None and len(prev) >= 5 and prev[4] is not None:
+            ratio = prev[4]
+        elif prev is not None:
+            ratio = None  # ya estaba antes de medir: no sabemos su precio relativo inicial
+        else:
+            ref = resumen[t[0]]["p10"]
+            ratio = round(t[2] / ref, 3) if ref else None
+        actual[id_subasta] = (t[0], t[1], t[2], t[3], ratio)
+
     if previo:
         ts_prev = datetime.fromisoformat(previo["ts"])
         if ts <= ts_prev:
@@ -382,15 +428,20 @@ def procesar_feed(*, ts: datetime, casa: int, tipo: str, subastas_api: list[dict
         # Si el hueco es muy grande (el recolector estuvo parado) las ventas
         # no son fiables: solo se guardan precios.
         if horas <= 6:
-            movimientos = estimar_movimientos(previo["subastas"], actual, horas)
+            movimientos = estimar_movimientos(previo["subastas"], actual, horas, tramos)
         else:
             horas = None
 
-    resumen = resumir(actual)
     filas = filas_salida(ts, casa, tipo, resumen, movimientos, horas)
     if filas:
         ruta = dir_datos / ts.strftime("%Y/%m/%d") / f"{ts:%Y%m%dT%H%M}_casa{casa}_{tipo}.csv.gz"
         escribir_csv(ruta, filas)
+    if tramos:
+        filas_t = [{"ts": ts.strftime("%Y-%m-%dT%H:%M:%SZ"), "casa": casa, "tipo": tipo, "item": item,
+                    "tramo": tr, "vendidas": v, "caducadas": c}
+                   for (item, tr), (v, c) in sorted(tramos.items()) if v or c]
+        ruta_t = dir_datos / "tramos" / ts.strftime("%Y/%m/%d") / f"{ts:%Y%m%dT%H%M}_casa{casa}_{tipo}.csv.gz"
+        escribir_csv(ruta_t, filas_t, COLUMNAS_TRAMOS)
     guardar_estado(ruta_estado, ts, actual)
 
     vendidas = sum(m["vend_seg"] + m["vend_prob"] for m in movimientos.values())

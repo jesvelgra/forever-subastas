@@ -91,6 +91,24 @@ class PruebasCalculo(unittest.TestCase):
         self.assertEqual(m["valor_vend"], 5000)
 
 
+class PruebasTramos(unittest.TestCase):
+    def test_tramo(self):
+        self.assertEqual(r.tramo(0.9), 0)
+        self.assertEqual(r.tramo(1.0), 1)
+        self.assertEqual(r.tramo(1.07), 3)
+        self.assertEqual(r.tramo(3.0), len(r.TRAMOS))
+
+    def test_ventas_y_caducadas_por_tramo(self):
+        # Subasta 1 aparece al precio de referencia (ratio 1.0) y se vende entera;
+        # subasta 2 aparece un 40 % más cara y caduca.
+        ant = {1: (HIERBA, 10, 100, "LONG", 1.0), 2: (HIERBA, 5, 140, "SHORT", 1.4)}
+        act = {3: (HIERBA, 10, 100, "VERY_LONG", 1.0)}
+        tramos = {}
+        r.estimar_movimientos(ant, act, 1.0, tramos)
+        self.assertEqual(tramos[(HIERBA, r.tramo(1.0))], [10, 0])
+        self.assertEqual(tramos[(HIERBA, r.tramo(1.4))], [0, 5])
+
+
 class PruebasFicheros(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -174,7 +192,9 @@ class PruebaCompleta(unittest.TestCase):
             self.assertEqual(r.main(), 0)
             estado.update(lm="Thu, 26 Nov 2026 12:05:00 GMT", hierba=3)
             self.assertEqual(r.main(), 0)
-            ficheros = sorted(p.name for p in Path(tmp, "datos").rglob("*.csv.gz"))
+            ficheros = sorted(p.name for p in Path(tmp, "datos").rglob("*.csv.gz") if "tramos" not in p.parts)
+            tramos = list(Path(tmp, "datos", "tramos").rglob("*.csv.gz"))
+            self.assertEqual(len(tramos), 1)
             self.assertEqual(ficheros, [
                 "20261126T1105_casa113_c.csv.gz", "20261126T1105_casa113_i.csv.gz",
                 "20261126T1205_casa113_c.csv.gz", "20261126T1205_casa113_i.csv.gz"])
