@@ -14,6 +14,7 @@ local AMARILLO, GRIS, VERDE, ROJO, NARANJA, FIN = "|cffffd100", "|cff9d9d9d", "|
 
 -- Posiciones dentro de D.i[id]
 local I_MIN, I_CMP, I_PV, I_VD, I_CANT, I_BH, I_SH, I_AB, I_AS, I_BD, I_SD, I_ADB, I_ADS = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+local I_T24, I_T7 = 15, 16
 -- Posiciones dentro de cada receta de D.r
 local R_PROF, R_NOMBRE, R_ITEM, R_CANT, R_COSTE, R_VENTA, R_BENEF, R_VD, R_DONDE, R_REAG, R_FALTA = 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
 
@@ -52,6 +53,14 @@ local function Ventas(vd)
     if vd > 0 then return NARANJA .. string.format("%.1f", vd) .. FIN end
     return ROJO .. "0" .. FIN
 end
+
+local function Tendencia(t)
+    if t == nil then return nil end
+    if math.abs(t) < 3 then return "estable" end
+    if t > 0 then return VERDE .. string.format("sube +%.0f%%", t) .. FIN end
+    return ROJO .. string.format("baja %.0f%%", t) .. FIN
+end
+FS.Tendencia = Tendencia
 
 local function HorasDesde(ts)
     if not ts or not time then return nil end
@@ -147,9 +156,72 @@ local function Conocida(pj, r)
     return pj.conocidas[r[R_ITEM]] or pj.nombres[r[R_NOMBRE]] or false
 end
 
+local porItem, porReactivo
+local function Indices()
+    if porItem then return porItem, porReactivo end
+    porItem, porReactivo = {}, {}
+    for _, r in ipairs(D and D.r or {}) do
+        local lista = porItem[r[R_ITEM]]
+        if not lista then
+            lista = {}
+            porItem[r[R_ITEM]] = lista
+        end
+        table.insert(lista, r)
+        for _, m in ipairs(r[R_REAG] or {}) do
+            local usos = porReactivo[m[1]]
+            if not usos then
+                usos = {}
+                porReactivo[m[1]] = usos
+            end
+            table.insert(usos, r)
+        end
+    end
+    return porItem, porReactivo
+end
+
 ---------------------------------------------------------------------------
 -- Tooltip de objetos
 ---------------------------------------------------------------------------
+
+local function AnadirFabricacion(tt, id)
+    local pi, pr = Indices()
+    local pj = Personaje()
+    -- 1) Si el objeto se fabrica: coste y beneficio de cada receta (máximo 2, primero las tuyas).
+    local recetas = pi[id]
+    if recetas then
+        local orden = {}
+        for _, r in ipairs(recetas) do table.insert(orden, r) end
+        table.sort(orden, function(x, y)
+            local cx, cy = Conocida(pj, x) and 1 or 0, Conocida(pj, y) and 1 or 0
+            if cx ~= cy then return cx > cy end
+            return (x[R_BENEF] or 0) > (y[R_BENEF] or 0)
+        end)
+        for k = 1, math.min(2, #orden) do
+            local r = orden[k]
+            local prof = D.p[r[R_PROF]] or "profesión"
+            local quien = Conocida(pj, r) and "" or (GRIS .. " (no la conoces)" .. FIN)
+            local benef = Moneda(r[R_BENEF])
+            if r[R_FALTA] then benef = benef .. ROJO .. " *" .. FIN end
+            tt:AddDoubleLine("Si lo fabricas (" .. prof .. ")" .. quien, benef, 1, 0.82, 0, 1, 1, 1)
+            tt:AddDoubleLine(GRIS .. "   materiales " .. FIN .. Moneda(r[R_COSTE]),
+                GRIS .. "venta neta " .. FIN .. Moneda(r[R_VENTA]), 1, 1, 1, 1, 1, 1)
+        end
+    end
+    -- 2) Si es material de tus profesiones: la receta más rentable en la que usarlo.
+    local usos = pr[id]
+    if usos and next(pj.profs) then
+        local mejor
+        for _, r in ipairs(usos) do
+            if pj.profs[r[R_PROF]] and not r[R_FALTA] and (r[R_BENEF] or 0) > 0 then
+                if not mejor or r[R_BENEF] > mejor[R_BENEF] then mejor = r end
+            end
+        end
+        if mejor then
+            tt:AddDoubleLine("Mejor receta tuya con esto", mejor[R_NOMBRE] .. " (" .. Moneda(mejor[R_BENEF]) .. ")",
+                1, 0.82, 0, 1, 1, 1)
+        end
+    end
+end
 
 local function AnadirTooltip(tt, id)
     if not (D and D.i and type(id) == "number") then return end
@@ -174,6 +246,14 @@ local function AnadirTooltip(tt, id)
     if d[I_BD] and d[I_SD] then
         tt:AddDoubleLine("Por días", "compra el " .. DIAS[d[I_BD] + 1] .. ", vende el " .. DIAS[d[I_SD] + 1], 1, 1, 1, 1, 1, 1)
     end
+    local t7, t24 = Tendencia(d[I_T7]), Tendencia(d[I_T24])
+    if t7 or t24 then
+        local partes = {}
+        if t7 then table.insert(partes, "7 días: " .. t7) end
+        if t24 then table.insert(partes, "24 h: " .. t24) end
+        tt:AddDoubleLine("Tendencia", table.concat(partes, GRIS .. " · " .. FIN), 1, 1, 1, 1, 1, 1)
+    end
+    AnadirFabricacion(tt, id)
     tt:Show()
 end
 
@@ -293,6 +373,13 @@ local function TooltipReceta(fila)
             precio and Moneda(precio * cant) or (ROJO .. "sin precio" .. FIN), 1, 1, 1, 1, 1, 1)
     end
     GameTooltip:AddDoubleLine("Coste total", Moneda(r[R_COSTE]), 1, 1, 1, 1, 1, 1)
+    local di = D.i and D.i[r[R_ITEM]]
+    if di and (di[I_T7] or di[I_T24]) then
+        local partes = {}
+        if di[I_T7] then table.insert(partes, "7 días: " .. Tendencia(di[I_T7])) end
+        if di[I_T24] then table.insert(partes, "24 h: " .. Tendencia(di[I_T24])) end
+        GameTooltip:AddDoubleLine("Precio del producto", table.concat(partes, " · "), 1, 1, 1, 1, 1, 1)
+    end
     local textoVenta = "Venta neta (tras 5% de la subasta)"
     if r[R_DONDE] == "vendedor" then textoVenta = "Venta al vendedor (mejor que la subasta)" end
     if r[R_DONDE] == "mercado" then textoVenta = textoVenta .. GRIS .. " · precio de mercado" .. FIN end
@@ -326,6 +413,15 @@ local function Refrescar()
             fila.prof:SetText(GRIS .. (D.p[r[R_PROF]] or "") .. FIN)
             fila.benef:SetText(Moneda(r[R_BENEF]))
             fila.ventas:SetText(Ventas(r[R_VD]))
+            local di = D.i and D.i[r[R_ITEM]]
+            local t7 = di and di[I_T7]
+            if t7 == nil then
+                fila.tend:SetText(GRIS .. "-" .. FIN)
+            elseif math.abs(t7) < 3 then
+                fila.tend:SetText("=")
+            else
+                fila.tend:SetText((t7 > 0 and VERDE or ROJO) .. string.format("%+.0f%%", t7) .. FIN)
+            end
             fila.coste:SetText(Moneda(r[R_COSTE]))
             fila.venta:SetText(Moneda(r[R_VENTA]))
             fila:Show()
@@ -363,12 +459,13 @@ local function Texto(padre, plantilla, ancho, justificar)
 end
 
 local COLUMNAS = {
-    { "nombre", "Receta", 230, "LEFT" },
-    { "prof", "Profesión", 100, "LEFT" },
-    { "benef", "Beneficio", 95, "RIGHT" },
-    { "ventas", "Ventas/día", 70, "RIGHT" },
-    { "coste", "Coste", 85, "RIGHT" },
-    { "venta", "Venta", 85, "RIGHT" },
+    { "nombre", "Receta", 200, "LEFT" },
+    { "prof", "Profesión", 90, "LEFT" },
+    { "benef", "Beneficio", 90, "RIGHT" },
+    { "ventas", "Ventas/día", 62, "RIGHT" },
+    { "tend", "Precio 7 d", 70, "RIGHT" },
+    { "coste", "Coste", 80, "RIGHT" },
+    { "venta", "Venta", 80, "RIGHT" },
 }
 
 local function CrearVentana()
@@ -383,7 +480,7 @@ local function CrearVentana()
         local cerrar = CreateFrame("Button", nil, f, "UIPanelCloseButton")
         cerrar:SetPoint("TOPRIGHT", -4, -4)
     end
-    f:SetSize(720, 500)
+    f:SetSize(740, 500)
     f:SetPoint("CENTER")
     f:SetFrameStrata("HIGH")
     f:SetMovable(true)
@@ -446,7 +543,7 @@ local function CrearVentana()
     f.filas = {}
     for i = 1, VISIBLES do
         local fila = CreateFrame("Button", nil, f)
-        fila:SetSize(690, ALTO_FILA)
+        fila:SetSize(710, ALTO_FILA)
         fila:SetPoint("TOPLEFT", 14, -98 - (i - 1) * ALTO_FILA)
         local resalte = fila:CreateTexture(nil, "HIGHLIGHT")
         resalte:SetAllPoints()

@@ -18,6 +18,7 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+import math
 import os
 import statistics
 import sys
@@ -106,7 +107,7 @@ class Acumulador:
             self._tipo_item[item] = tipo
             p10 = _int(f["p10"])
             if p10:
-                self._buffer[item].append((local.hour, p10))
+                self._buffer[item].append((local.hour, p10, _int(f["min"]) or p10))
             if f["horas"]:
                 horas = float(f["horas"])
                 uds = int(f["vend_seg"]) + int(f["vend_prob"])
@@ -125,18 +126,19 @@ class Acumulador:
         items = set(self._buffer) | set(self._ventas_dia)
         for item in items:
             obs = self._buffer.get(item, [])
-            mediana = statistics.median(p for _, p in obs) if obs else None
+            mediana = statistics.median(p for _, p, _ in obs) if obs else None
+            mediana_min = statistics.median(m for _, _, m in obs) if obs else None
             if mediana and len(obs) >= 6:
                 # Una observación por hora (si hay dos en la misma hora, la media).
                 por_hora = defaultdict(list)
-                for h, p in obs:
+                for h, p, _ in obs:
                     por_hora[h].append(p / mediana)
                 for h, rs in por_hora.items():
                     acc = self.ratio_hora[item][h]
                     acc[0] += sum(rs) / len(rs)
                     acc[1] += 1
             uds, valor = self._ventas_dia.get(item, (0, 0))
-            self.dias[item].append((dia, mediana, uds, valor, self._tipo_item.get(item, "c")))
+            self.dias[item].append((dia, mediana, uds, valor, self._tipo_item.get(item, "c"), mediana_min))
         self._buffer = defaultdict(list)
         self._ventas_dia = defaultdict(lambda: [0, 0])
 
@@ -176,7 +178,47 @@ def perfil_semana(dias: list[tuple]) -> list[float | None]:
     return [(s / c) if c >= 2 else None for s, c in zip(suma, cuenta)]
 
 
-def analizar(dir_datos: Path, casa: int, ahora: datetime | None = None) -> dict:
+def tendencia_24h(serie: list[tuple[datetime, int]]) -> float | None:
+    """% de cambio entre las últimas 6 h y las mismas horas del día anterior (precio p10)."""
+    if not serie:
+        return None
+    ref = max(ts for ts, _ in serie)
+    recientes = [p for ts, p in serie if ts > ref - timedelta(hours=6)]
+    antes = [p for ts, p in serie if ref - timedelta(hours=30) < ts <= ref - timedelta(hours=24)]
+    if len(recientes) < 2 or len(antes) < 2:
+        return None
+    return round((statistics.median(recientes) / statistics.median(antes) - 1) * 100, 1)
+
+
+def tendencia_7d(diaria: dict, hoy) -> float | None:
+    """% de cambio semanal del precio diario, con la pendiente de Theil-Sen (aguanta días raros)."""
+    puntos = sorted((d, p) for d, p in diaria.items() if p and timedelta(0) <= hoy - d <= timedelta(days=7))
+    if len(puntos) < 4 or (puntos[-1][0] - puntos[0][0]).days < 4:
+        return None
+    pendientes = []
+    for i in range(len(puntos)):
+        for j in range(i + 1, len(puntos)):
+            dias = (puntos[j][0] - puntos[i][0]).days
+            if dias:
+                pendientes.append((math.log(puntos[j][1]) - math.log(puntos[i][1])) / dias)
+    if not pendientes:
+        return None
+    return round((math.exp(statistics.median(pendientes) * 7) - 1) * 100, 1)
+
+
+def cargar_historial_semilla(ruta: Path) -> dict[int, dict]:
+    """Historial diario previo (escaneos de Auctionator) para tener tendencia desde el primer día."""
+    if not ruta.exists():
+        return {}
+    with gzip.open(ruta, "rt", encoding="utf-8") as f:
+        datos = json.load(f)
+    salida = {}
+    for item, dias in datos.get("items", {}).items():
+        salida[int(item)] = {datetime.strptime(d, "%Y-%m-%d").date(): p for d, p in dias.items()}
+    return salida
+
+
+def analizar(dir_datos: Path, casa: int, ahora: datetime | None = None, semilla: dict | None = None) -> dict:
     ahora = ahora or datetime.now(timezone.utc)
     ficheros = listar_ficheros(dir_datos, casa, ahora - timedelta(days=DIAS_HISTORIAL))
     if not ficheros:
@@ -185,14 +227,17 @@ def analizar(dir_datos: Path, casa: int, ahora: datetime | None = None) -> dict:
     acc = Acumulador()
     ultimo: dict[str, tuple[datetime, list[dict]]] = {}
     p10_24h = defaultdict(list)
+    serie_31h = defaultdict(list)
     for ts, tipo, ruta in ficheros:
         filas = leer_csv(ruta)
         acc.añadir(ts, tipo, filas)
         ultimo[tipo] = (ts, filas)
-        if ts >= ahora - timedelta(hours=24):
+        if ts >= ahora - timedelta(hours=31):
             for f in filas:
                 if f["p10"]:
-                    p10_24h[int(f["item"])].append(int(f["p10"]))
+                    serie_31h[int(f["item"])].append((ts, int(f["p10"])))
+                    if ts >= ahora - timedelta(hours=24):
+                        p10_24h[int(f["item"])].append(int(f["p10"]))
     acc.terminar()
 
     primero = ficheros[0][0]
@@ -234,6 +279,16 @@ def analizar(dir_datos: Path, casa: int, ahora: datetime | None = None) -> dict:
     for item, valores in p10_24h.items():
         if item in items:
             items[item]["cmp"] = int(statistics.median(valores))
+
+    hoy = ultimo_ts.astimezone(ZONA).date()
+    semilla = semilla or {}
+    for item, info in items.items():
+        info["t24"] = tendencia_24h(serie_31h.get(item, []))
+        diaria = dict(semilla.get(item, {}))
+        for d in acc.dias.get(item, []):
+            if d[5]:
+                diaria[d[0]] = d[5]
+        info["t7"] = tendencia_7d(diaria, hoy)
 
     # Perfil general del mercado (media de los objetos con datos, ponderada por ventas).
     mercado_h = [[0.0, 0.0] for _ in range(24)]
@@ -369,7 +424,8 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
     lineas = [
         "-- Generado automáticamente por forever-subastas. No editar a mano.",
         "-- i[id] = {min, compra24h, precioVentaReal, ventasDia, unidadesALaVenta,",
-        "--          horaBarata, horaCara, %barata, %cara, diaBarato, diaCaro, %diaBarato, %diaCaro, diasConVenta}",
+        "--          horaBarata, horaCara, %barata, %cara, diaBarato, diaCaro, %diaBarato, %diaCaro, diasConVenta,",
+        "--          tendencia24h%, tendencia7dias%}",
         "-- r = {{id, profesion, nombre, item, cantidad, coste, venta, beneficio, ventasDia, donde,",
         "--       {{reactivo, cantidad, precioUnidad, 'v'=vendedor|'s'=subasta}, ...}, faltanPrecios}, ...}",
         "ForeverSubastasDatos = {",
@@ -389,7 +445,7 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
         fila = [d.get("min"), d.get("cmp"), d.get("pv"), d.get("vd"), d.get("cant") or 0,
                 d.get("bh"), d.get("sh"), d.get("ab") or None, d.get("as_") or None,
                 d.get("bd"), d.get("sd"), d.get("adb") or None, d.get("ads") or None,
-                d.get("dias_venta")]
+                d.get("dias_venta"), d.get("t24"), d.get("t7")]
         lineas.append(f"    [{iid}]={_lua_val(fila)},")
     lineas.append("  },")
     lineas.append("  p = {")
@@ -433,7 +489,8 @@ def main() -> int:
     base = Path(os.environ.get("DIR_BASE", "."))
     dir_datos = base / "datos"
     casa = int(os.environ.get("CASA", "110"))
-    res = analizar(dir_datos, casa)
+    semilla = cargar_historial_semilla(dir_datos / "estaticos" / "auctionator_historial.json.gz")
+    res = analizar(dir_datos, casa, semilla=semilla)
 
     ruta_est = dir_datos / "estaticos" / "recetas.json"
     estaticos = json.loads(ruta_est.read_text("utf-8")) if ruta_est.exists() else {}
@@ -445,8 +502,9 @@ def main() -> int:
     escribir_lua(base / "addon" / "ForeverSubastas" / "Datos.lua", res, recetas, estaticos)
     escribir_csv_recetas(dir_datos / "analisis" / "recetas.csv", recetas, estaticos)
     con_ventas = sum(1 for d in res["items"].values() if d.get("vd"))
+    con_tendencia = sum(1 for d in res["items"].values() if d.get("t7") is not None)
     print(f"Casa {casa}: {res['dias']} días de historial, {len(res['items'])} objetos, "
-          f"{con_ventas} con ventas medidas, {len(recetas)} recetas")
+          f"{con_ventas} con ventas medidas, {con_tendencia} con tendencia semanal, {len(recetas)} recetas")
     return 0
 
 

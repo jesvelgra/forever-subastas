@@ -99,6 +99,7 @@ def main() -> int:
       ev._scripts.OnEvent(ev, "TRADE_SKILL_SHOW")
       -- Tooltip de un objeto con datos
       TOOLTIP_CB(GameTooltip, { id = 2447 })
+      TOOLTIP_CB(GameTooltip, { id = 118 })
       -- Ventana
       SlashCmdList["FOREVERSUBASTAS"]("")
       local v = ForeverSubastasVentana
@@ -134,6 +135,8 @@ def main() -> int:
     assert g.CONOCE_118 is True, "no registró la receta conocida"
     assert g.PROF_171 == 180, "no registró la profesión"
     assert any("Subasta Alianza JcJ" in l for l in lineas), "el tooltip no añade datos"
+    assert any("Si lo fabricas" in l for l in lineas), "el tooltip no muestra el beneficio de fabricar"
+    assert any("Tendencia" in l for l in lineas), "el tooltip no muestra la tendencia"
     print("OK")
     return 0
 

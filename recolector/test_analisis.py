@@ -94,5 +94,39 @@ class PruebasAnalisis(unittest.TestCase):
         self.assertEqual(min(range(24), key=lambda h: precio_h[h] or 9), 5)
 
 
+class PruebasTendencia(unittest.TestCase):
+    def test_tendencia_7d_sube_y_aguanta_dias_raros(self):
+        from datetime import date
+        hoy = date(2026, 11, 26)
+        # Sube un 10 % al día, con un día raro muy barato.
+        diaria = {hoy - timedelta(days=k): 100 * 1.1 ** (7 - k) for k in range(8)}
+        diaria[hoy - timedelta(days=3)] = 5
+        t = a.tendencia_7d(diaria, hoy)
+        self.assertAlmostEqual(t, (1.1 ** 7 - 1) * 100, delta=8)
+
+    def test_tendencia_7d_sin_datos(self):
+        from datetime import date
+        hoy = date(2026, 11, 26)
+        self.assertIsNone(a.tendencia_7d({hoy: 100, hoy - timedelta(days=1): 90}, hoy))
+
+    def test_tendencia_24h(self):
+        ref = datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc)
+        serie = [(ref - timedelta(hours=h), 120 if h < 6 else 100) for h in range(31)]
+        self.assertEqual(a.tendencia_24h(serie), 20.0)
+
+    def test_semilla_da_tendencia_desde_el_primer_dia(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dd = Path(tmp) / "datos"
+            ts = datetime(2026, 11, 26, 11, 21, tzinfo=timezone.utc)
+            r.escribir_csv(dd / "2026/11/26/20261126T1121_casa110_c.csv.gz", [{
+                "ts": "", "casa": 110, "tipo": "c", "item": HIERBA, "n": 5, "cant": 50, "min": 200, "p10": 210,
+                "p25": 220, "p50": 230, "nuevas": 0, "vend_seg": 0, "vend_prob": 0, "valor_vend": 0,
+                "retiradas": 0, "caducadas": 0, "horas": ""}])
+            from datetime import date
+            semilla = {HIERBA: {date(2026, 11, 19) + timedelta(days=k): 100 + 15 * k for k in range(7)}}
+            res = a.analizar(dd, 110, ahora=ts + timedelta(minutes=5), semilla=semilla)
+            self.assertGreater(res["items"][HIERBA]["t7"], 50)
+
+
 if __name__ == "__main__":
     unittest.main()
