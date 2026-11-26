@@ -67,11 +67,13 @@ C_TradeSkillUI = {
   GetAllRecipeIDs = function() return { 2330, 2331, 2332 } end,
   GetRecipeInfo = function(id)
     if id == 2330 then return { learned = true, name = "Poción de curación menor", relativeDifficulty = 3 } end
-    if id == 2331 then return { learned = true, name = "Elixir de fuerza menor", relativeDifficulty = 0 } end
-    return { learned = false, name = "Poción menor de maná", relativeDifficulty = 1 }
+    if id == 2331 then return { learned = true, name = "Elixir de fuerza menor", relativeDifficulty = 1, maxTrivialLevel = 200 } end
+    return { learned = false, name = "Poción menor de maná", relativeDifficulty = 0 }
   end,
   GetRecipeOutputItemData = function(id) return { itemID = ({ [2330] = 118, [2331] = 2454, [2332] = 2455 })[id] } end,
   GetBaseProfessionInfo = function() return { professionID = 171, skillLevel = 180, maxSkillLevel = 225 } end,
+  GetRecipeRequirements = function(id) if id == 2331 then return { { name = "Rueca", met = false } } end return {} end,
+  GetRecipeSourceText = function(id) return "|cFFFFD200Instructor|r|nRequiere Alquimia (150)" end,
 }
 ProfessionsFrame = mock("ProfessionsFrame")
 C_Container = {
@@ -144,7 +146,28 @@ SUBIR_1 = v.filas[1].c[1]._texto .. " | " .. tostring(v.filas[1].c[2]._texto) ..
 INFO_SUBIR = v.info._texto
 v.filas[1]._scripts.OnEnter(v.filas[1])
 v.filas[1]._scripts.OnClick(v.filas[1], "LeftButton")
-v.botonSubirProf._scripts.OnClick(v.botonSubirProf)
+
+-- Instructor
+GetNumTrainerServices = function() return 2 end
+GetTrainerServiceInfo = function(i) return i == 1 and "Poción menor de maná" or "Elixir de defensa", nil, "available" end
+GetTrainerServiceSkillReq = function(i) return "Alquimia", i == 1 and 25 or 250, true end
+GetTrainerServiceCost = function(i) return 500 end
+UnitName = function(u) if u == "npc" then return "Lilyssia Nightbreeze" end return "Suci Va" end
+GetZoneText = function() return "Ventormenta" end
+GetSubZoneText = function() return "Distrito de los Magos" end
+ev._scripts.OnEvent(ev, "TRAINER_SHOW")
+v.pestanas.subir._scripts.OnClick(v.pestanas.subir)
+SUBIR_APRENDER = v.filas[1].c[7]._texto .. " / " .. tostring(v.filas[2].c[7]._texto)
+v.filas[2]._scripts.OnEnter(v.filas[2])
+-- Cambio de color de la receta que se está subiendo (amarilla -> verde)
+v.filas[1]._scripts.OnClick(v.filas[1], "LeftButton")
+local viejo = C_TradeSkillUI.GetRecipeInfo
+C_TradeSkillUI.GetRecipeInfo = function(id)
+  local i = viejo(id); if id == 2331 then i.relativeDifficulty = 2 end; return i
+end
+ev._scripts.OnEvent(ev, "TRADE_SKILL_LIST_UPDATE")
+C_TradeSkillUI.GetRecipeInfo = viejo
+UnitName = function(u) return "Suci Va" end
 
 -- Pestaña Qué vender
 v.pestanas.vender._scripts.OnClick(v.pestanas.vender)
@@ -165,6 +188,8 @@ INFO_CUENTAS = v.info._texto
 CUENTAS_1 = v.filas[1].c[1]._texto .. " | " .. tostring(v.filas[1].c[2]._texto) .. " | " .. tostring(v.filas[1].c[6]._texto)
 NUM_OPS = #ForeverSubastas.Cuentas().ops
 
+v.pestanas.subir._scripts.OnClick(v.pestanas.subir)
+v.botonSubirProf._scripts.OnClick(v.botonSubirProf)
 local pj = ForeverSubastas.Personaje()
 CONOCE_118 = pj.conocidas[118] and true or false
 PROF_171 = pj.profs[171]
@@ -188,6 +213,7 @@ def main() -> int:
         print("Lista Auctionator:", g.LISTA_AUCTIONATOR.nombre, list(g.LISTA_AUCTIONATOR.cadenas.values()))
     print("Subir profesión:", g.FILAS_SUBIR, "filas ·", g.SUBIR_1)
     print("   ", g.INFO_SUBIR)
+    print("    Aprender:", g.SUBIR_APRENDER)
     print("Qué vender:", g.FILAS_VENDER, "filas ·", g.VENDER_1)
     print("   ", g.INFO_VENDER)
     print("Mis cuentas:", g.FILAS_CUENTAS, "filas ·", g.CUENTAS_1)
@@ -202,6 +228,11 @@ def main() -> int:
     assert g.POPUP == "FOREVERSUBASTAS_LISTA", "no se abrió la ventana de la lista de la compra"
     assert g.FILAS_SUBIR == 2, "Subir profesión debería listar las 2 recetas naranja/amarilla (la gris no)"
     assert any("Coste neto por punto" in l for l in lineas), "falta el coste por punto en el tooltip"
+    assert any("Cantidad sugerida" in l for l in lineas), "falta la cantidad sugerida"
+    assert any("Necesitas | Rueca" in l for l in lineas), "falta la herramienta necesaria"
+    assert any("Instructor | Lilyssia" in l for l in lineas), "falta dónde se aprende"
+    chat = list(g.CHAT.values())
+    assert any("ya está" in m and "verde" in m for m in chat), "no avisó del cambio a verde"
     assert g.FILAS_VENDER == 2, "Qué vender debería listar 2 objetos (el ligado no)"
     assert g.NUM_OPS == 4, f"deberían registrarse 4 operaciones (venta, compra correo, compra bienes, publicación), hay {g.NUM_OPS}"
     print("OK")

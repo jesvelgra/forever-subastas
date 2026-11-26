@@ -6,6 +6,8 @@ con los nombres en español.
 
 from __future__ import annotations
 
+import csv
+import gzip
 import json
 import os
 import sys
@@ -21,6 +23,51 @@ def nombre_es(valor) -> str:
     if isinstance(valor, dict):
         return valor.get("es_ES") or _nombre(valor)
     return str(valor or "")
+
+
+PREFIJOS = ("Patrón", "Receta", "Plano", "Diseño", "Fórmula", "Manual", "Esquema", "Libro", "Tomo", "Pergamino")
+
+
+def nombre_receta_de_patron(nombre: str) -> str:
+    """'Patrón: Telar' -> 'Telar'. Si no hay prefijo conocido, devuelve el nombre tal cual."""
+    if ": " in nombre:
+        prefijo, resto = nombre.split(": ", 1)
+        if any(prefijo.startswith(p) for p in PREFIJOS):
+            return resto.strip()
+    return nombre.strip()
+
+
+def enlazar_patrones(patrones: dict, recetas: dict) -> int:
+    """Añade a cada receta el objeto que la enseña (patron) y el nivel de profesión necesario."""
+    por_nombre: dict[str, list] = {}
+    for rid, r in recetas.items():
+        por_nombre.setdefault(r.get("nombre", "").lower(), []).append(rid)
+    n = 0
+    for iid, pat in patrones.items():
+        candidatas = por_nombre.get(nombre_receta_de_patron(pat["n"]).lower(), [])
+        if pat.get("prof"):
+            candidatas = [rid for rid in candidatas if recetas[rid].get("prof") == pat["prof"]] or candidatas
+        for rid in candidatas:
+            recetas[rid]["patron"] = iid
+            if pat.get("nivel"):
+                recetas[rid]["nivel"] = pat["nivel"]
+            n += 1
+    return n
+
+
+def objetos_vistos_en_subasta(dir_datos: Path, casa: int, dias: int = 10) -> set[int]:
+    """Objetos que han aparecido en la subasta en los últimos días (de los resúmenes horarios)."""
+    ficheros = sorted(dir_datos.glob(f"*/*/*/*_casa{casa}_*.csv.gz"))[-dias * 48:]
+    vistos: set[int] = set()
+    for ruta in ficheros[::6]:  # con uno de cada seis basta: los objetos se repiten mucho
+        with gzip.open(ruta, "rt", encoding="utf-8") as f:
+            for fila in csv.DictReader(f):
+                vistos.add(int(fila["item"]))
+    if ficheros:
+        with gzip.open(ficheros[-1], "rt", encoding="utf-8") as f:
+            for fila in csv.DictReader(f):
+                vistos.add(int(fila["item"]))
+    return vistos
 
 
 def main() -> int:
@@ -113,6 +160,24 @@ def main() -> int:
                 fallos += 1
             items[iid] = it
     print(f"Objetos: {len(items)} ({fallos} sin ficha en la API)")
+
+    # Patrones, recetas, planos... que se han visto en la subasta: precio, nivel necesario y a qué receta enseñan.
+    vistos = objetos_vistos_en_subasta(salida.parent.parent, int(os.environ.get("CASA", "110")))
+    pendientes = [i for i in vistos if i not in items]
+    print(f"Objetos vistos en la subasta sin ficha: {len(pendientes)}")
+    patrones = {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for iid, d in ex.map(leer_item, pendientes):
+            if not d or (d.get("item_class") or {}).get("id") != 9:
+                continue
+            req = ((d.get("preview_item") or {}).get("requirements") or {}).get("skill") or {}
+            patrones[iid] = {"n": nombre_es(d.get("name")), "nivel": req.get("level"),
+                             "prof": (req.get("profession") or {}).get("id"), "venta": d.get("sell_price"),
+                             "cal": (d.get("quality") or {}).get("type", "")}
+    enlazados = enlazar_patrones(patrones, recetas_por_id)
+    print(f"Patrones en la subasta: {len(patrones)}, enlazados con su receta: {enlazados}")
+    for iid, pat in patrones.items():
+        items[iid] = {"n": pat["n"], "cal": pat["cal"], "venta": pat["venta"], "clase": "Receta", "nivel_req": pat["nivel"]}
 
     salida.parent.mkdir(parents=True, exist_ok=True)
     datos = {"profesiones": profesiones,

@@ -19,6 +19,7 @@ local I_MIN, I_CMP, I_PV, I_VD, I_CANT, I_BH, I_SH, I_AB, I_AS, I_BD, I_SD = 1, 
 local I_T24, I_T7, I_HV, I_REC, I_RECP, I_CURVA = 15, 16, 17, 18, 19, 20
 -- Posiciones dentro de cada receta de D.r
 local R_PROF, R_NOMBRE, R_ITEM, R_COSTE, R_VENTA, R_BENEF, R_VD, R_DONDE, R_REAG, R_FALTA = 2, 3, 4, 6, 7, 8, 9, 10, 11, 12
+local R_PATRON, R_NIVEL = 13, 14
 
 local MAX_OPERACIONES = 5000
 
@@ -265,6 +266,27 @@ local function LeerRecetasConocidas()
             local dif = Dificultad(info)
             if dif then
                 local dato = { d = dif, a = info.learned and true or false, s = info.numSkillUps or 1 }
+                if type(info.maxTrivialLevel) == "number" and info.maxTrivialLevel > 0 then dato.g = info.maxTrivialLevel end
+                -- Herramientas o puestos necesarios (rueca, telar, yunque...).
+                if T.GetRecipeRequirements then
+                    local ok, reqs = pcall(T.GetRecipeRequirements, rid)
+                    if ok and type(reqs) == "table" and #reqs > 0 then
+                        local nombres, cumple = {}, true
+                        for _, rq in ipairs(reqs) do
+                            if rq.name then table.insert(nombres, rq.name) end
+                            if rq.met == false then cumple = false end
+                        end
+                        if #nombres > 0 then
+                            dato.req = table.concat(nombres, ", ")
+                            dato.ok = cumple
+                        end
+                    end
+                end
+                -- Dónde se aprende (solo las que no conoce).
+                if not info.learned and T.GetRecipeSourceText then
+                    local ok, fuente = pcall(T.GetRecipeSourceText, rid)
+                    if ok and type(fuente) == "string" and fuente ~= "" then dato.f = fuente end
+                end
                 if item then colores.items[item] = dato end
                 if info.name then colores.nombres[info.name] = dato end
             end
@@ -276,7 +298,36 @@ local function LeerRecetasConocidas()
         colores.nivel = (infoProf and infoProf.skillLevel) or pj.profs[prof]
         colores.max = infoProf and infoProf.maxSkillLevel
         pj.subir[prof] = colores
+        if FS.ComprobarSubiendo then FS.ComprobarSubiendo(prof, colores) end
     end
+end
+
+local leyendoInstructor = false
+local function LeerInstructor()
+    if leyendoInstructor or not (GetNumTrainerServices and GetTrainerServiceInfo) then return end
+    leyendoInstructor = true
+    local _, db = Personaje()
+    db.aprender = db.aprender or {}
+    local npc = UnitName and UnitName("npc") or "instructor"
+    local zona = GetZoneText and GetZoneText() or ""
+    local sub = GetSubZoneText and GetSubZoneText() or ""
+    if sub ~= "" and sub ~= zona then zona = sub .. ", " .. zona end
+    local n = 0
+    for i = 1, GetNumTrainerServices() or 0 do
+        local nombre, _, tipo = GetTrainerServiceInfo(i)
+        if nombre and tipo ~= "header" then
+            local nivel
+            if GetTrainerServiceSkillReq then
+                local _, niv = GetTrainerServiceSkillReq(i)
+                nivel = niv
+            end
+            local coste = GetTrainerServiceCost and GetTrainerServiceCost(i) or nil
+            db.aprender[nombre] = { npc = npc, zona = zona, nivel = nivel, coste = coste, t = time and time() or 0 }
+            n = n + 1
+        end
+    end
+    leyendoInstructor = false
+    return n
 end
 
 local function Conocida(pj, r)
@@ -513,14 +564,17 @@ local function CajaDeTexto(popup)
     return popup and (popup.editBox or popup.EditBox or (popup.GetEditBox and popup:GetEditBox()))
 end
 
-local function PedirVecesYCrearLista(r)
+local sugerencia = { n = 5, texto = "" }
+local function PedirVecesYCrearLista(r, n, texto)
+    sugerencia.n = n or 5
+    sugerencia.texto = texto or ""
     if not (StaticPopupDialogs and StaticPopup_Show) then
-        CrearListaCompra(r, 5)
+        CrearListaCompra(r, sugerencia.n)
         return
     end
     if not StaticPopupDialogs["FOREVERSUBASTAS_LISTA"] then
         StaticPopupDialogs["FOREVERSUBASTAS_LISTA"] = {
-            text = "¿Cuántas veces quieres fabricar %s?\nSe descuenta lo que ya tienes.",
+            text = "¿Cuántas veces quieres fabricar %s?\n%s\nSe descuenta lo que ya tienes.",
             button1 = "Crear lista",
             button2 = "Cancelar",
             hasEditBox = true,
@@ -528,7 +582,7 @@ local function PedirVecesYCrearLista(r)
             OnShow = function(self)
                 local caja = CajaDeTexto(self)
                 if caja then
-                    caja:SetText("5")
+                    caja:SetText(tostring(sugerencia.n))
                     caja:HighlightText()
                 end
             end,
@@ -549,7 +603,8 @@ local function PedirVecesYCrearLista(r)
             preferredIndex = 3,
         }
     end
-    StaticPopup_Show("FOREVERSUBASTAS_LISTA", r[R_NOMBRE], nil, r)
+    local texto2 = sugerencia.texto ~= "" and ("Sugerencia: " .. sugerencia.n .. " (" .. sugerencia.texto .. ")") or ""
+    StaticPopup_Show("FOREVERSUBASTAS_LISTA", r[R_NOMBRE], texto2, r)
 end
 
 ---------------------------------------------------------------------------
@@ -689,8 +744,8 @@ local COLUMNAS = {
         { "Total", 85, "RIGHT" }, { "Ventas/día", 62, "RIGHT" }, { "Consejo", 160, "LEFT" },
     },
     subir = {
-        { "Receta", 200, "LEFT" }, { "Color", 75, "LEFT" }, { "Coste", 80, "RIGHT" }, { "Recuperas", 85, "RIGHT" },
-        { "Coste por punto", 95, "RIGHT" }, { "Ventas/día", 62, "RIGHT" }, { "", 70, "LEFT" },
+        { "Receta", 185, "LEFT" }, { "Color", 72, "LEFT" }, { "Coste", 75, "RIGHT" }, { "Recuperas", 80, "RIGHT" },
+        { "Coste por punto", 95, "RIGHT" }, { "Ventas/día", 62, "RIGHT" }, { "Aprender", 95, "LEFT" },
     },
     cuentas = {
         { "Producto", 190, "LEFT" }, { "Vendido", 70, "RIGHT" }, { "Ingresos", 90, "RIGHT" }, { "Comprado", 65, "RIGHT" },
@@ -744,6 +799,82 @@ local function ListaFabricar()
     return salida
 end
 
+local function SinFormato(texto)
+    return (texto or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|T.-|t", ""):gsub("|n", " · "):gsub("\n", " · ")
+end
+
+-- Devuelve: textoCorto, lineasTooltip, nivelNecesario
+local function InfoAprender(r, dato)
+    local _, db = Personaje()
+    local lineas = {}
+    local corto, nivel
+    local inst = db.aprender and db.aprender[r[R_NOMBRE]]
+    if inst then
+        nivel = inst.nivel
+        corto = "instructor" .. (inst.coste and inst.coste > 0 and (" " .. MonedaCorta(inst.coste)) or "")
+        table.insert(lineas, { "Instructor", inst.npc .. " (" .. inst.zona .. ")" })
+        if inst.nivel then table.insert(lineas, { "   Nivel necesario", tostring(inst.nivel) }) end
+        if inst.coste then table.insert(lineas, { "   Coste", Moneda(inst.coste) }) end
+    end
+    local patron = r[R_PATRON]
+    if patron then
+        nivel = nivel or r[R_NIVEL]
+        local dp = D.i and D.i[patron]
+        local precio = dp and dp[I_MIN]
+        table.insert(lineas, { "Se aprende con", NombreObjeto(patron) })
+        if r[R_NIVEL] then table.insert(lineas, { "   Nivel necesario", tostring(r[R_NIVEL]) }) end
+        if precio then
+            table.insert(lineas, { "   En la subasta desde", Moneda(precio) })
+            if not corto then corto = "patrón " .. MonedaCorta(precio) end
+        end
+    end
+    if dato and dato.f then
+        table.insert(lineas, { "Fuente según el juego", SinFormato(dato.f) })
+        if not corto then
+            local f = SinFormato(dato.f):lower()
+            if f:find("instructor") then corto = "instructor"
+            elseif f:find("vendedor") then corto = "vendedor"
+            elseif f:find("misi") then corto = "misión"
+            elseif f:find("bot") or f:find("drop") then corto = "botín"
+            else corto = "ver fuente" end
+        end
+    end
+    return corto or "aprender", lineas, nivel
+end
+
+local function NombreRequisito(dato)
+    if not (dato and dato.req) then return "" end
+    return (dato.ok == false and ROJO or GRIS) .. " [" .. dato.req .. "]" .. FIN
+end
+
+-- Cuántas veces fabricar para subir con esta receta hasta que deje de compensar (se vuelva verde).
+-- Usa el nivel en que se vuelve gris si el juego lo da; con amarilla, la probabilidad baja de forma lineal.
+local function SugerirCantidad(x)
+    local nivel = x.nivelProf
+    local gris = x.gris
+    if x.dif == 0 then
+        if gris and nivel then
+            -- Naranja: hasta que pase a amarilla no se sabe exactamente; estimamos que la amarilla empieza
+            -- unos (gris - amarilla) = 2/3 del tramo restante antes del gris.
+            local puntos = math.max(1, math.floor((gris - nivel) / 3))
+            return puntos, string.format("naranja: 1 punto por fabricación; unos %d puntos hasta que se vuelva amarilla", puntos)
+        end
+        return 5, "naranja: 1 punto por fabricación; te aviso cuando cambie de color"
+    elseif x.dif == 1 then
+        if gris and nivel and gris > nivel then
+            local restante = gris - nivel
+            local puntos = math.max(1, math.floor(restante / 2))  -- hasta que se vuelva verde
+            local veces = 0
+            for k = 0, puntos - 1 do veces = veces + restante / (restante - k) end
+            veces = math.ceil(veces)
+            return veces, string.format("amarilla: unos %d puntos hasta que se vuelva verde (se vuelve gris en %d)", puntos, gris)
+        end
+        return 7, "amarilla: ~75% de subir; con 7 fabricaciones, unos 5 puntos. Te aviso cuando se vuelva verde"
+    end
+    return 0, "verde: solo sube 1 de cada 4; mejor otra receta"
+end
+FS.SugerirCantidad = SugerirCantidad
+
 -- Profesiones de las que hay colores leídos (o que el personaje tiene y fabrican algo).
 local function ProfesionesParaSubir()
     local pj = Personaje()
@@ -758,6 +889,7 @@ local function ProfesionesParaSubir()
     return lista
 end
 
+local ocultas = 0
 local function ListaSubir()
     local pj = Personaje()
     local profs = ProfesionesParaSubir()
@@ -765,12 +897,18 @@ local function ListaSubir()
     local prof = estado.profSubir
     local colores = prof and pj.subir and pj.subir[prof]
     local salida = {}
+    ocultas = 0
     if not colores then return salida, prof, nil end
     for _, r in ipairs(D.r or {}) do
         if r[R_PROF] == prof then
             -- Por objeto fabricado; por nombre solo si el juego no dio los objetos (hay recetas con el mismo nombre).
             local c = colores.items[r[R_ITEM]]
             if not c and not next(colores.items) then c = colores.nombres[r[R_NOMBRE]] end
+            local _, _, nivelReq = InfoAprender(r, c)
+            if c and not c.a and nivelReq and colores.nivel and nivelReq > colores.nivel then
+                ocultas = ocultas + 1
+                c = nil
+            end
             if c and c.d and c.d < 3 then
                 -- Lo que recuperas: la venta neta si se vende, si no lo que paga el vendedor.
                 local recuperas, donde = r[R_VENTA] or 0, "subasta"
@@ -780,7 +918,8 @@ local function ListaSubir()
                 local prob = DIF_PROB[c.d] * (c.s or 1)
                 local porPunto = (r[R_COSTE] - recuperas) / prob
                 table.insert(salida, { r = r, dif = c.d, aprendida = c.a, recuperas = recuperas, donde = donde,
-                    porPunto = porPunto, prob = DIF_PROB[c.d], conocida = c.a })
+                    porPunto = porPunto, prob = DIF_PROB[c.d], conocida = c.a, dato = c, gris = c.g,
+                    nivelProf = colores.nivel, prof = prof })
             end
         end
     end
@@ -790,6 +929,31 @@ local function ListaSubir()
         return x.porPunto < y.porPunto
     end)
     return salida, prof, colores
+end
+
+function FS.ComprobarSubiendo(prof, colores)
+    local sub = FS.subiendo
+    if not sub or sub.prof ~= prof then return end
+    local c = colores.items[sub.item] or colores.nombres[sub.nombre]
+    if not c or c.d == sub.dif then return end
+    sub.dif = c.d
+    if c.d >= 2 then
+        local alternativa = ""
+        local anterior = estado.profSubir
+        estado.profSubir = prof
+        local lista = ListaSubir()
+        estado.profSubir = anterior
+        for _, x in ipairs(lista) do
+            if x.r[R_ITEM] ~= sub.item and x.aprendida and x.dif <= 1 and not x.r[R_FALTA] then
+                alternativa = " Ahora te sale mejor: " .. x.r[R_NOMBRE] .. " (" .. Moneda(x.porPunto) .. " por punto)."
+                break
+            end
+        end
+        Imprimir(sub.nombre .. " ya está " .. DIF_COLOR[c.d] .. DIF_NOMBRE[c.d] .. FIN ..
+            (c.d == 3 and ": ya no da puntos." or ": solo sube 1 de cada 4.") .. alternativa)
+    elseif c.d == 1 then
+        Imprimir(sub.nombre .. " ha pasado a " .. DIF_COLOR[1] .. "amarilla" .. FIN .. " (75% de subir). Aún compensa.")
+    end
 end
 
 local function LeerBolsas()
@@ -884,8 +1048,36 @@ local function AlEntrarFila(fila)
             string.format(" (sube un punto el %d%% de las veces)", math.floor(x.prob * 100 + 0.5)), 1, 1, 1, 1, 1, 1)
         GameTooltip:AddDoubleLine("Recuperas al venderlo (" .. x.donde .. ")", Moneda(x.recuperas), 1, 1, 1, 1, 1, 1)
         GameTooltip:AddDoubleLine("Coste neto por punto de habilidad", Moneda(x.porPunto), 1, 1, 1, 1, 1, 1)
+        if x.gris then
+            GameTooltip:AddDoubleLine("Se vuelve gris en", tostring(x.gris), 1, 1, 1, 1, 1, 1)
+        end
+        local n, texto = SugerirCantidad(x)
+        GameTooltip:AddDoubleLine("Cantidad sugerida", n > 0 and (n .. " veces") or "ninguna", 1, 0.82, 0, 1, 1, 1)
+        GameTooltip:AddLine(GRIS .. "   " .. texto .. FIN, 1, 1, 1, true)
+        if x.dato and x.dato.req then
+            local falta = x.dato.ok == false
+            GameTooltip:AddDoubleLine("Necesitas", x.dato.req .. (falta and " (no la tienes cerca)" or ""),
+                1, 1, 1, falta and 1 or 0.6, falta and 0.25 or 1, falta and 0.25 or 0.6)
+            local idReq = IdPorNombre(x.dato.req)
+            local dr = idReq and D.i and D.i[idReq]
+            if dr and dr[I_MIN] then
+                GameTooltip:AddDoubleLine("   " .. x.dato.req .. " en la subasta desde", Moneda(dr[I_MIN]), 1, 1, 1, 1, 1, 1)
+            end
+            local pi = Indices()
+            local fab = idReq and pi[idReq]
+            if fab and fab[1] then
+                GameTooltip:AddDoubleLine("   Se fabrica con", (D.p[fab[1][R_PROF]] or "?") .. ": " .. fab[1][R_NOMBRE], 1, 1, 1, 1, 1, 1)
+            end
+        end
         if not x.aprendida then
-            GameTooltip:AddLine(NARANJA .. "Aún no la conoces: apréndela en el instructor o con su receta." .. FIN, 1, 1, 1, true)
+            local _, lineas = InfoAprender(x.r, x.dato)
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine(NARANJA .. "Aún no la conoces. Cómo aprenderla:" .. FIN)
+            for _, l in ipairs(lineas) do GameTooltip:AddDoubleLine(l[1], l[2], 1, 1, 1, 1, 1, 1) end
+            if #lineas == 0 then
+                GameTooltip:AddLine(GRIS .. "Visita a tu instructor de " .. (D.p[x.prof] or "la profesión") ..
+                    " una vez y el addon apuntará qué enseña, a qué nivel y cuánto cuesta." .. FIN, 1, 1, 1, true)
+            end
         end
         GameTooltip:Show()
     elseif x.id or x.item then
@@ -897,7 +1089,14 @@ end
 
 local function AlPulsarFila(fila)
     local x = fila.dato
-    if x and (estado.modo == "fabricar" or estado.modo == "subir") then PedirVecesYCrearLista(x.r) end
+    if not x then return end
+    if estado.modo == "fabricar" then
+        PedirVecesYCrearLista(x.r)
+    elseif estado.modo == "subir" then
+        local n, texto = SugerirCantidad(x)
+        FS.subiendo = { prof = x.prof, item = x.r[R_ITEM], nombre = x.r[R_NOMBRE], dif = x.dif }
+        PedirVecesYCrearLista(x.r, math.max(1, n), texto)
+    end
 end
 
 local function AplicarColumnas()
@@ -968,10 +1167,11 @@ local function Refrescar()
             local hace = HorasDesde(colores.t)
             local cuando = hace and (hace < 1 and string.format("hace %d min", math.floor(hace * 60)) or string.format("hace %.0f h", hace)) or "?"
             local mejor = lista[1]
-            info = string.format("%s nivel %s · colores leídos %s%s", D.p[prof], tostring(colores.nivel or "?"), cuando,
-                mejor and (" · lo más barato: " .. mejor.r[R_NOMBRE] .. " a " .. Moneda(mejor.porPunto) .. " por punto") or "")
+            info = string.format("%s nivel %s · colores leídos %s%s%s", D.p[prof], tostring(colores.nivel or "?"), cuando,
+                mejor and (" · lo más barato: " .. mejor.r[R_NOMBRE] .. " a " .. Moneda(mejor.porPunto) .. " por punto") or "",
+                ocultas > 0 and (GRIS .. string.format(" · %d ocultas por nivel", ocultas) .. FIN) or "")
         end
-        pie = "Coste por punto = (materiales - lo que recuperas al venderlo) / probabilidad de subir. Negativo = ganas oro. Clic: lista de la compra."
+        pie = "Clic: lista de la compra con la cantidad sugerida. Visita a tu instructor una vez para saber nivel y coste de lo que enseña."
     elseif modo == "vender" then
         local total
         lista, total = ListaVender()
@@ -1013,7 +1213,7 @@ local function Refrescar()
             fila:Show()
         elseif modo == "subir" then
             local r = x.r
-            local nombre = (x.aprendida and BLANCO or GRIS) .. r[R_NOMBRE] .. FIN
+            local nombre = (x.aprendida and BLANCO or GRIS) .. r[R_NOMBRE] .. FIN .. NombreRequisito(x.dato)
             if r[R_FALTA] then nombre = nombre .. ROJO .. " *" .. FIN end
             c[1]:SetText(nombre)
             c[2]:SetText(DIF_COLOR[x.dif] .. DIF_NOMBRE[x.dif] .. FIN .. GRIS .. string.format(" %d%%", math.floor(x.prob * 100 + 0.5)) .. FIN)
@@ -1021,7 +1221,7 @@ local function Refrescar()
             c[4]:SetText(MonedaCorta(x.recuperas))
             c[5]:SetText(x.porPunto <= 0 and (VERDE .. "gana " .. FIN .. MonedaCorta(-x.porPunto)) or MonedaCorta(x.porPunto))
             c[6]:SetText(Ventas(r[R_VD]))
-            c[7]:SetText(x.aprendida and "" or (NARANJA .. "aprender" .. FIN))
+            c[7]:SetText(x.aprendida and "" or (NARANJA .. (InfoAprender(r, x.dato)) .. FIN))
             fila:Show()
         elseif modo == "vender" then
             local d = D.i and D.i[x.id]
@@ -1278,7 +1478,8 @@ end
 local eventos = CreateFrame("Frame")
 for _, ev in ipairs({ "PLAYER_LOGIN", "PLAYER_LOGOUT", "PLAYER_MONEY", "SKILL_LINES_CHANGED", "TRADE_SKILL_SHOW",
     "TRADE_SKILL_LIST_UPDATE", "ADDON_LOADED", "MAIL_INBOX_UPDATE", "AUCTION_HOUSE_SHOW", "BAG_UPDATE_DELAYED",
-    "COMMODITY_PRICE_UPDATED", "COMMODITY_PURCHASE_SUCCEEDED", "COMMODITY_PURCHASE_FAILED" }) do
+    "COMMODITY_PRICE_UPDATED", "COMMODITY_PURCHASE_SUCCEEDED", "COMMODITY_PURCHASE_FAILED", "TRAINER_SHOW",
+    "TRAINER_UPDATE" }) do
     local ok = pcall(eventos.RegisterEvent, eventos, ev)
     if ok and ev == "COMMODITY_PURCHASE_SUCCEEDED" then eventoCompraOk = true end
 end
@@ -1307,6 +1508,11 @@ eventos:SetScript("OnEvent", function(_, evento, arg1, arg2)
     elseif evento == "TRADE_SKILL_SHOW" or evento == "TRADE_SKILL_LIST_UPDATE" then
         pcall(LeerRecetasConocidas)
         pcall(CrearBotonesExternos)
+    elseif evento == "TRAINER_SHOW" or evento == "TRAINER_UPDATE" then
+        local ok, n = pcall(LeerInstructor)
+        if ok and n and n > 0 and evento == "TRAINER_SHOW" then
+            Imprimir("apuntado lo que enseña este instructor (" .. n .. " entradas) para la pestaña Subir profesión.")
+        end
     elseif evento == "MAIL_INBOX_UPDATE" then
         pcall(LeerFacturas)
     elseif evento == "AUCTION_HOUSE_SHOW" then

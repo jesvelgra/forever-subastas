@@ -472,6 +472,7 @@ def calcular_recetas(estaticos: dict, items: dict, vendedor: dict[int, int]) -> 
             "coste": round(coste), "venta": round(venta), "beneficio": round(venta - coste),
             "vd": info.get("vd"), "donde": donde, "falta": falta, "reag": reag,
             "sh": info.get("sh"), "sd": info.get("sd"),
+            "patron": r.get("patron"), "nivel": r.get("nivel"),
         })
     # Primero las recetas con todos los precios conocidos.
     salida.sort(key=lambda x: (not x["falta"], x["beneficio"]), reverse=True)
@@ -517,7 +518,8 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
         "--          {%venta por tramo de precio}}",
         "-- tramos de precio (respecto al precio habitual): " + ", ".join(f"{x:g}" for x in RATIO_TRAMO),
         "-- r = {{id, profesion, nombre, item, cantidad, coste, venta, beneficio, ventasDia, donde,",
-        "--       {{reactivo, cantidad, precioUnidad, 'v'=vendedor|'s'=subasta}, ...}, faltanPrecios}, ...}",
+        "--       {{reactivo, cantidad, precioUnidad, 'v'=vendedor|'s'=subasta}, ...}, faltanPrecios,",
+        "--       objetoQueLaEnseña (patrón), nivelDeProfesiónNecesario}, ...}",
         "ForeverSubastasDatos = {",
         f"  version = 1,",
         f"  casa = {res['casa']},",
@@ -550,9 +552,11 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
     for r in recetas:
         nombres_usados.add(r["item"])
         nombres_usados.update(x[0] for x in r["reag"])
+        if r.get("patron"):
+            nombres_usados.add(r["patron"])
         fila = [r["id"], r["prof"], r["nombre"], r["item"], r["cant"], r["coste"], r["venta"],
                 r["beneficio"], r["vd"], r["donde"], [list(x) for x in r["reag"]],
-                len(r["falta"]) if r["falta"] else None]
+                len(r["falta"]) if r["falta"] else None, r.get("patron"), r.get("nivel")]
         lineas.append(f"    {_lua_val(fila)},")
     lineas.append("  },")
     lineas.append("  n = {")
