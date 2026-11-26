@@ -68,3 +68,14 @@ jobs:
             sleep 5
           done
           exit 1
+
+      - name: Analizar (precios, ventas, mejores horas y recetas)
+        run: cd recolector && DIR_BASE=.. CASA=110 python analisis.py
+
+      - name: Publicar los datos para el addon
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view datos >/dev/null 2>&1 || gh release create datos --title "Datos del addon" \
+            --notes "Se actualiza cada hora. El PC descarga Datos.lua de aqui." --latest=false
+          gh release upload datos addon/ForeverSubastas/Datos.lua datos/analisis/recetas.csv --clobber

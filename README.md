@@ -39,6 +39,17 @@ La API no dice qué se vende: las ventas son una estimación. Las compras parcia
 
 `datos/casas.json` lista los conjuntos de reglas y las casas de subastas que devuelve la API.
 
+## El addon (en el juego)
+
+`addon/ForeverSubastas` se copia en `World of Warcraft\_forever_\Interface\AddOns`. Cada hora el análisis publica un `Datos.lua` nuevo en la release **datos** de este repositorio, y el PC lo descarga solo con la tarea programada que crea `actualizar/instalar.bat` (doble clic una vez).
+
+En el juego:
+
+- **Tooltip de cualquier objeto:** mínimo actual, precio habitual de las últimas 24 h, precio al que se vende de verdad, ventas al día y las horas/días más baratos y más caros.
+- **/subastas** (o el botón *Rentabilidad* de la ventana de profesiones): recetas ordenadas por beneficio, con coste de materiales, venta neta tras el 5 % de la subasta y ventas al día. Las recetas que conoces salen en blanco y las demás en gris (abre tus profesiones una vez para que el addon las registre).
+
+Las mejores horas aparecen con 3 días de historial y los mejores días de la semana con 14.
+
 ## Ajustes opcionales
 
 En **Settings → Secrets and variables → Actions → Variables** se pueden crear:
@@ -51,4 +62,5 @@ En **Settings → Secrets and variables → Actions → Variables** se pueden cr
 
 ```
 python -m unittest discover -s recolector
+python addon/prueba_addon.py      # necesita: pip install lupa
 ```

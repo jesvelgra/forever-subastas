@@ -1,0 +1,10 @@
+## Interface: 16001
+## Title: Forever Subastas
+## Notes: Precios, ventas reales, mejores horas y rentabilidad de recetas en la subasta de WoW Forever (Alianza JcJ).
+## Author: Jesús Velasco
+## Version: 1.0.0
+## SavedVariables: ForeverSubastasDB
+## IconTexture: Interface\Icons\INV_Misc_Coin_02
+
+Datos.lua
+Nucleo.lua

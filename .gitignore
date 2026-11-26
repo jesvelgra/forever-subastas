@@ -1,3 +1,7 @@
 estado/
 __pycache__/
 *.pyc
+# Se generan cada hora y se publican en la release "datos", no en el repositorio.
+addon/ForeverSubastas/Datos.lua
+datos/analisis/
+addon/ForeverSubastas/actualizar/actualizar.log
