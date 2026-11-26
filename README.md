@@ -46,9 +46,16 @@ La API no dice qué se vende: las ventas son una estimación. Las compras parcia
 En el juego:
 
 - **Tooltip de cualquier objeto:** mínimo actual, precio habitual de las últimas 24 h, precio al que se vende de verdad, ventas al día y las horas/días más baratos y más caros.
-- **/subastas** (o el botón *Rentabilidad* de la ventana de profesiones): recetas ordenadas por beneficio, con coste de materiales, venta neta tras el 5 % de la subasta y ventas al día. Las recetas que conoces salen en blanco y las demás en gris (abre tus profesiones una vez para que el addon las registre).
+- **/subastas** abre una ventana con tres pestañas:
+  - **Qué fabricar** (también con el botón *Rentabilidad* de la ventana de profesiones): recetas ordenadas por beneficio, con coste, venta neta tras el 5 % de la subasta, ventas al día y tendencia del producto. Las recetas que conoces salen en blanco. **Clic en una receta** crea la lista de la compra en Auctionator (descuenta lo que ya tienes, separa lo que se compra al vendedor y pone un precio máximo del 20 % sobre el habitual).
+  - **Qué vender** (también con el botón de la subasta): lo que llevas en las bolsas, a cuánto ponerlo, probabilidad de venta, total y un consejo (ponlo ya, espera, mejor al vendedor, casi no se vende).
+  - **Mis cuentas**: tus ventas y compras reales (facturas del buzón y compras de bienes en la subasta), lo que has publicado, balance por producto y evolución de tu oro. Periodo de 7 días, 30 días o todo.
 
-Las mejores horas aparecen con 3 días de historial y los mejores días de la semana con 14.
+Las mejores horas aparecen con 3 días de historial, los mejores días de la semana con 14 y la probabilidad de venta según el precio cuando se acumulan suficientes subastas terminadas (unos días).
+
+## Probabilidad de venta según el precio
+
+El recolector guarda para cada subasta su precio respecto al precio habitual (p10) cuando apareció, y al terminar si se vendió o caducó. En `datos/tramos/` se acumulan las unidades vendidas y caducadas por tramo (≤0,95; ≤1; ≤1,05; ≤1,1; ≤1,2; ≤1,35; ≤1,5; ≤2; más). El análisis recomienda el precio que maximiza lo que esperas cobrar (precio × probabilidad de venta), usando la curva propia del objeto mezclada con la general.
 
 ## Ajustes opcionales
 

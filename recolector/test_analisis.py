@@ -94,6 +94,46 @@ class PruebasAnalisis(unittest.TestCase):
         self.assertEqual(min(range(24), key=lambda h: precio_h[h] or 9), 5)
 
 
+class PruebasPrecioRecomendado(unittest.TestCase):
+    def test_elige_el_que_mas_cobra_de_media(self):
+        # Subir a 1,2x baja la venta del 90 % al 85 %: compensa (1,2*0,85 > 1*0,9).
+        curva = [0.92, 0.9, 0.89, 0.88, 0.85, 0.4, 0.2, 0.05]
+        precio, ratio, prob = a.precio_recomendado(1000, curva)
+        self.assertEqual((precio, ratio, prob), (1200, 1.2, 85))
+
+    def test_sin_curva_no_recomienda(self):
+        self.assertEqual(a.precio_recomendado(1000, [None] * 8), (None, None, None))
+
+    def test_curva_del_objeto_se_mezcla_con_la_general(self):
+        glob = [0.5] * 8
+        por_item = {(HIERBA, 1): [30, 0]}  # todo lo que se puso al precio habitual se vendió
+        curva, total = a.curva_item(HIERBA, por_item, glob)
+        self.assertEqual(total, 30)
+        self.assertAlmostEqual(curva[1], (30 + 10 * 0.5) / 40)
+        self.assertEqual(curva[0], 0.5)
+
+    def test_extremo_a_extremo_con_tramos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dd = Path(tmp) / "datos"
+            ts = datetime(2026, 11, 26, 11, 21, tzinfo=timezone.utc)
+            r.escribir_csv(dd / "2026/11/26/20261126T1121_casa110_c.csv.gz", [{
+                "ts": "", "casa": 110, "tipo": "c", "item": HIERBA, "n": 5, "cant": 50, "min": 95, "p10": 100,
+                "p25": 110, "p50": 120, "nuevas": 0, "vend_seg": 0, "vend_prob": 0, "valor_vend": 0,
+                "retiradas": 0, "caducadas": 0, "horas": ""}])
+            filas = []
+            for tr, (v, c) in enumerate([(90, 10), (90, 10), (85, 15), (80, 20), (70, 30), (20, 80), (5, 95), (1, 99)]):
+                filas.append({"ts": "", "casa": 110, "tipo": "c", "item": HIERBA, "tramo": tr,
+                              "vendidas": v, "caducadas": c})
+            r.escribir_csv(dd / "tramos/2026/11/26/20261126T1121_casa110_c.csv.gz", filas, r.COLUMNAS_TRAMOS)
+            res = a.analizar(dd, 110, ahora=ts + timedelta(minutes=5))
+            info = res["items"][HIERBA]
+            # 1,0 x 0,90 = 0,90 gana a 1,05 x 0,85 = 0,89 y a 1,1 x 0,8 = 0,88
+            self.assertEqual(info["rec"], 100)
+            self.assertEqual(info["rec_prob"], 90)
+            self.assertEqual(info["curva"][0], 90)
+            self.assertEqual(res["mercado"]["curvas"]["c"][1], 90)
+
+
 class PruebasTendencia(unittest.TestCase):
     def test_tendencia_7d_sube_y_aguanta_dias_raros(self):
         from datetime import date

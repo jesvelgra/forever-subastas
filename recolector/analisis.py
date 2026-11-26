@@ -34,6 +34,13 @@ DIAS_VENTAS = 7
 MIN_DIAS_HORAS = 3      # días con datos para fiarse del patrón por horas
 MIN_DIAS_SEMANA = 14    # días con datos para fiarse del patrón por día de la semana
 MIN_UDS_PRECIO_REAL = 5 # ventas mínimas para usar el precio real de venta
+DIAS_TRAMOS = 14        # días de historial para la probabilidad de venta por precio
+MIN_UDS_CURVA_GLOBAL = 300  # unidades terminadas (vendidas o caducadas) para fiarse de la curva general
+MIN_UDS_CURVA_ITEM = 20     # ... y para usar la curva propia de un objeto
+SUAVIZADO_CURVA = 10        # peso de la curva general al mezclarla con la del objeto
+# Precio relativo (respecto al p10 del momento) que representa cada tramo al recomendar un precio.
+# Debe ir a juego con recolector.TRAMOS; el último tramo (más de 2) no se recomienda nunca.
+RATIO_TRAMO = [0.95, 1.0, 1.05, 1.1, 1.2, 1.35, 1.5, 2.0]
 
 # Materiales que venden los vendedores (por si no están en la caché de Auctionator).
 VENDEDOR_CONOCIDOS = {
@@ -218,6 +225,67 @@ def cargar_historial_semilla(ruta: Path) -> dict[int, dict]:
     return salida
 
 
+def leer_tramos(dir_datos: Path, casa: int, desde: datetime) -> tuple[dict, dict]:
+    """Suma ventas y caducadas por (objeto, tramo) y por (tipo, tramo)."""
+    por_item: dict[tuple[int, int], list[int]] = defaultdict(lambda: [0, 0])
+    por_tipo: dict[tuple[str, int], list[int]] = defaultdict(lambda: [0, 0])
+    for ruta in (dir_datos / "tramos").glob(f"*/*/*/*_casa{casa}_*.csv.gz"):
+        try:
+            ts = datetime.strptime(ruta.name[:13], "%Y%m%dT%H%M").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if ts < desde:
+            continue
+        for f in leer_csv(ruta):
+            v, c, tr = int(f["vendidas"]), int(f["caducadas"]), int(f["tramo"])
+            a = por_item[(int(f["item"]), tr)]
+            a[0] += v
+            a[1] += c
+            b = por_tipo[(f["tipo"], tr)]
+            b[0] += v
+            b[1] += c
+    return por_item, por_tipo
+
+
+def curva_global(por_tipo: dict, tipo: str) -> list[float | None]:
+    salida = []
+    for tr in range(len(RATIO_TRAMO)):
+        v, c = por_tipo.get((tipo, tr), (0, 0))
+        salida.append(v / (v + c) if v + c >= 30 else None)
+    total = sum(sum(por_tipo.get((tipo, tr), (0, 0))) for tr in range(len(RATIO_TRAMO)))
+    return salida if total >= MIN_UDS_CURVA_GLOBAL else [None] * len(RATIO_TRAMO)
+
+
+def curva_item(item: int, por_item: dict, glob: list[float | None]) -> tuple[list[float | None], int]:
+    """Probabilidad de venta por tramo para un objeto, mezclada con la general (suavizado bayesiano)."""
+    curva = []
+    total = 0
+    for tr, pg in enumerate(glob):
+        v, c = por_item.get((item, tr), (0, 0))
+        total += v + c
+        if pg is None:
+            curva.append(v / (v + c) if v + c >= MIN_UDS_CURVA_ITEM else None)
+        else:
+            curva.append((v + SUAVIZADO_CURVA * pg) / (v + c + SUAVIZADO_CURVA))
+    return curva, total
+
+
+def precio_recomendado(ref: int | None, curva: list[float | None]) -> tuple[int | None, float | None, float | None]:
+    """Precio que maximiza lo que esperas cobrar (precio x probabilidad de venta). Devuelve (precio, ratio, prob)."""
+    if not ref:
+        return None, None, None
+    mejor = None
+    for ratio, prob in zip(RATIO_TRAMO, curva):
+        if prob is None:
+            continue
+        valor = ratio * prob
+        if mejor is None or valor > mejor[0] + 1e-9:
+            mejor = (valor, ratio, prob)
+    if not mejor:
+        return None, None, None
+    return round(ref * mejor[1]), mejor[1], round(mejor[2] * 100)
+
+
 def analizar(dir_datos: Path, casa: int, ahora: datetime | None = None, semilla: dict | None = None) -> dict:
     ahora = ahora or datetime.now(timezone.utc)
     ficheros = listar_ficheros(dir_datos, casa, ahora - timedelta(days=DIAS_HISTORIAL))
@@ -280,6 +348,25 @@ def analizar(dir_datos: Path, casa: int, ahora: datetime | None = None, semilla:
         if item in items:
             items[item]["cmp"] = int(statistics.median(valores))
 
+    # Hora con más ventas (por hora observada), con al menos 3 días de historial.
+    if dias_historial >= MIN_DIAS_HORAS:
+        for item, ventas in acc.ventas_hora.items():
+            if item not in items or sum(ventas) < 20:
+                continue
+            cob = acc.cobertura_hora.get(items[item]["tipo"], [0.0] * 24)
+            ritmo = [(v / c) if c >= MIN_DIAS_HORAS else -1 for v, c in zip(ventas, cob)]
+            items[item]["hv"] = max(range(24), key=lambda h: ritmo[h]) if max(ritmo) > 0 else None
+
+    por_item_tr, por_tipo_tr = leer_tramos(dir_datos, casa, ahora - timedelta(days=DIAS_TRAMOS))
+    curvas_glob = {t: curva_global(por_tipo_tr, t) for t in ("c", "i")}
+    for item, info in items.items():
+        curva, total = curva_item(item, por_item_tr, curvas_glob.get(info["tipo"], [None] * len(RATIO_TRAMO)))
+        ref = info.get("cmp") or info.get("p10")
+        precio, ratio, prob = precio_recomendado(ref, curva)
+        info.update(rec=precio, rec_prob=prob)
+        if total >= MIN_UDS_CURVA_ITEM and all(x is not None for x in curva):
+            info["curva"] = [round(x * 100) for x in curva]
+
     hoy = ultimo_ts.astimezone(ZONA).date()
     semilla = semilla or {}
     for item, info in items.items():
@@ -306,8 +393,9 @@ def analizar(dir_datos: Path, casa: int, ahora: datetime | None = None, semilla:
     cob_h = [sum(acc.cobertura_hora[t][h] for t in acc.cobertura_hora) for h in range(24)]
     ritmo_h = [round(v / c, 1) if c else None for v, c in zip(ventas_h_tot, cob_h)]
 
+    curvas_pct = {t: [round(x * 100) if x is not None else None for x in c] for t, c in curvas_glob.items()}
     return {"casa": casa, "ahora": ahora, "ultimo": ultimo_ts, "dias": round(dias_historial, 2),
-            "items": items, "mercado": {"precio_h": precio_h, "ventas_h": ritmo_h}}
+            "items": items, "mercado": {"precio_h": precio_h, "ventas_h": ritmo_h, "curvas": curvas_pct}}
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +513,9 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
         "-- Generado automáticamente por forever-subastas. No editar a mano.",
         "-- i[id] = {min, compra24h, precioVentaReal, ventasDia, unidadesALaVenta,",
         "--          horaBarata, horaCara, %barata, %cara, diaBarato, diaCaro, %diaBarato, %diaCaro, diasConVenta,",
-        "--          tendencia24h%, tendencia7dias%}",
+        "--          tendencia24h%, tendencia7dias%, horaConMasVentas, precioRecomendado, %ventaAEsePrecio,",
+        "--          {%venta por tramo de precio}}",
+        "-- tramos de precio (respecto al precio habitual): " + ", ".join(f"{x:g}" for x in RATIO_TRAMO),
         "-- r = {{id, profesion, nombre, item, cantidad, coste, venta, beneficio, ventasDia, donde,",
         "--       {{reactivo, cantidad, precioUnidad, 'v'=vendedor|'s'=subasta}, ...}, faltanPrecios}, ...}",
         "ForeverSubastasDatos = {",
@@ -435,7 +525,9 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
         f"  ultimaDescarga = {_lua_str(res['ultimo'].astimezone(ZONA).strftime('%d/%m %H:%M'))},",
         f"  generadoTs = {int(res['ahora'].timestamp())},",
         f"  dias = {_lua_val(res['dias'])},",
-        f"  mercado = {{ precioHora = {_lua_val(res['mercado']['precio_h'])}, ventasHora = {_lua_val(res['mercado']['ventas_h'])} }},",
+        f"  mercado = {{ precioHora = {_lua_val(res['mercado']['precio_h'])}, ventasHora = {_lua_val(res['mercado']['ventas_h'])},",
+        f"    curvaBienes = {_lua_val(res['mercado']['curvas'].get('c', []))}, curvaObjetos = {_lua_val(res['mercado']['curvas'].get('i', []))},",
+        f"    tramos = {_lua_val(RATIO_TRAMO)} }},",
         "  i = {",
     ]
     for iid in sorted(items):
@@ -445,7 +537,8 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
         fila = [d.get("min"), d.get("cmp"), d.get("pv"), d.get("vd"), d.get("cant") or 0,
                 d.get("bh"), d.get("sh"), d.get("ab") or None, d.get("as_") or None,
                 d.get("bd"), d.get("sd"), d.get("adb") or None, d.get("ads") or None,
-                d.get("dias_venta"), d.get("t24"), d.get("t7")]
+                d.get("dias_venta"), d.get("t24"), d.get("t7"), d.get("hv"), d.get("rec"), d.get("rec_prob"),
+                d.get("curva")]
         lineas.append(f"    [{iid}]={_lua_val(fila)},")
     lineas.append("  },")
     lineas.append("  p = {")
