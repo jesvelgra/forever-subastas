@@ -2,7 +2,7 @@ name: Recolector de subastas
 
 on:
   schedule:
-    - cron: "23,53 * * * *"   # dos veces por hora (si Blizzard no ha publicado nada nuevo, no hace nada)
+    - cron: "22,53 * * * *"   # dos veces por hora (si Blizzard no ha publicado nada nuevo, no hace nada)
   workflow_dispatch:        # permite lanzarlo a mano desde la pestaña Actions
     inputs:
       buscar:
