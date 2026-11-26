@@ -22,6 +22,12 @@ local R_PROF, R_NOMBRE, R_ITEM, R_COSTE, R_VENTA, R_BENEF, R_VD, R_DONDE, R_REAG
 
 local MAX_OPERACIONES = 5000
 
+-- Color de las recetas (Enum.TradeskillRelativeDifficulty): 0 naranja, 1 amarilla, 2 verde, 3 gris.
+-- Probabilidad media de subir un punto con cada color (fórmula clásica: amarilla 100-50 %, verde 50-0 %).
+local DIF_PROB = { [0] = 1, [1] = 0.75, [2] = 0.25, [3] = 0 }
+local DIF_COLOR = { [0] = "|cffff8040", [1] = "|cffffff00", [2] = "|cff40c040", [3] = "|cff808080" }
+local DIF_NOMBRE = { [0] = "naranja", [1] = "amarilla", [2] = "verde", [3] = "gris" }
+
 ---------------------------------------------------------------------------
 -- Utilidades
 ---------------------------------------------------------------------------
@@ -209,6 +215,28 @@ local function ActualizarProfesiones()
     if next(nuevas) then pj.profs = nuevas end
 end
 
+local function ProfesionAbierta()
+    local T = C_TradeSkillUI
+    if T and T.GetBaseProfessionInfo then
+        local ok, info = pcall(T.GetBaseProfessionInfo)
+        if ok and info and info.professionID and D and D.p[info.professionID] then return info.professionID, info end
+    end
+    if T and T.GetTradeSkillLine then
+        local ok, linea, _, nivel = pcall(T.GetTradeSkillLine)
+        if ok and linea and D and D.p[linea] then return linea, { skillLevel = nivel } end
+    end
+    return nil
+end
+
+local function Dificultad(info)
+    local d = info.relativeDifficulty
+    if type(d) == "number" then return d end
+    local t = info.difficulty
+    if t == "optimal" then return 0 elseif t == "medium" then return 1 elseif t == "easy" then return 2
+    elseif t == "trivial" then return 3 end
+    return nil
+end
+
 local function LeerRecetasConocidas()
     local T = C_TradeSkillUI
     if not (T and T.GetAllRecipeIDs and T.GetRecipeInfo) then return end
@@ -216,9 +244,11 @@ local function LeerRecetasConocidas()
     if T.IsTradeSkillGuild and T.IsTradeSkillGuild() then return end
     if T.IsNPCCrafting and T.IsNPCCrafting() then return end
     local pj = Personaje()
+    local prof, infoProf = ProfesionAbierta()
+    local colores = { items = {}, nombres = {} }
     for _, rid in ipairs(T.GetAllRecipeIDs() or {}) do
         local info = T.GetRecipeInfo(rid)
-        if info and info.learned then
+        if info then
             local item
             if T.GetRecipeOutputItemData then
                 local ok, salida = pcall(T.GetRecipeOutputItemData, rid)
@@ -228,14 +258,32 @@ local function LeerRecetasConocidas()
                 local ok, enlace = pcall(T.GetRecipeItemLink, rid)
                 if ok and enlace and GetItemInfoInstant then item = GetItemInfoInstant(enlace) end
             end
-            if item then pj.conocidas[item] = true end
-            if info.name then pj.nombres[info.name] = true end
+            if info.learned then
+                if item then pj.conocidas[item] = true end
+                if info.name then pj.nombres[info.name] = true end
+            end
+            local dif = Dificultad(info)
+            if dif then
+                local dato = { d = dif, a = info.learned and true or false, s = info.numSkillUps or 1 }
+                if item then colores.items[item] = dato end
+                if info.name then colores.nombres[info.name] = dato end
+            end
         end
+    end
+    if prof and next(colores.nombres) then
+        pj.subir = pj.subir or {}
+        colores.t = time and time() or 0
+        colores.nivel = (infoProf and infoProf.skillLevel) or pj.profs[prof]
+        colores.max = infoProf and infoProf.maxSkillLevel
+        pj.subir[prof] = colores
     end
 end
 
 local function Conocida(pj, r)
-    return pj.conocidas[r[R_ITEM]] or pj.nombres[r[R_NOMBRE]] or false
+    if pj.conocidas[r[R_ITEM]] then return true end
+    -- Por nombre solo si el juego no nos dio los objetos fabricados (hay recetas distintas con el mismo nombre).
+    if not next(pj.conocidas) then return pj.nombres[r[R_NOMBRE]] or false end
+    return false
 end
 
 local porItem, porReactivo
@@ -627,7 +675,7 @@ local VISIBLES = 16
 local ALTO_FILA = 20
 local NUM_COLUMNAS = 7
 local estado = { modo = "fabricar", prof = "mias", orden = "unidad", soloVenta = true, soloConocidas = false,
-    offset = 0, periodo = 7 }
+    offset = 0, periodo = 7, profSubir = nil }
 local lista = {}
 local ventana
 
@@ -639,6 +687,10 @@ local COLUMNAS = {
     vender = {
         { "Objeto", 190, "LEFT" }, { "Tienes", 45, "RIGHT" }, { "Ponlo a", 85, "RIGHT" }, { "Se vende", 55, "RIGHT" },
         { "Total", 85, "RIGHT" }, { "Ventas/día", 62, "RIGHT" }, { "Consejo", 160, "LEFT" },
+    },
+    subir = {
+        { "Receta", 200, "LEFT" }, { "Color", 75, "LEFT" }, { "Coste", 80, "RIGHT" }, { "Recuperas", 85, "RIGHT" },
+        { "Coste por punto", 95, "RIGHT" }, { "Ventas/día", 62, "RIGHT" }, { "", 70, "LEFT" },
     },
     cuentas = {
         { "Producto", 190, "LEFT" }, { "Vendido", 70, "RIGHT" }, { "Ingresos", 90, "RIGHT" }, { "Comprado", 65, "RIGHT" },
@@ -690,6 +742,54 @@ local function ListaFabricar()
         return clave(x) > clave(y)
     end)
     return salida
+end
+
+-- Profesiones de las que hay colores leídos (o que el personaje tiene y fabrican algo).
+local function ProfesionesParaSubir()
+    local pj = Personaje()
+    local vistas, lista = {}, {}
+    for prof in pairs(pj.subir or {}) do
+        if D.p[prof] and not vistas[prof] then vistas[prof] = true; table.insert(lista, prof) end
+    end
+    for prof in pairs(pj.profs) do
+        if D.p[prof] and not vistas[prof] then vistas[prof] = true; table.insert(lista, prof) end
+    end
+    table.sort(lista, function(x, y) return (D.p[x] or "") < (D.p[y] or "") end)
+    return lista
+end
+
+local function ListaSubir()
+    local pj = Personaje()
+    local profs = ProfesionesParaSubir()
+    if not estado.profSubir or not D.p[estado.profSubir] then estado.profSubir = profs[1] end
+    local prof = estado.profSubir
+    local colores = prof and pj.subir and pj.subir[prof]
+    local salida = {}
+    if not colores then return salida, prof, nil end
+    for _, r in ipairs(D.r or {}) do
+        if r[R_PROF] == prof then
+            -- Por objeto fabricado; por nombre solo si el juego no dio los objetos (hay recetas con el mismo nombre).
+            local c = colores.items[r[R_ITEM]]
+            if not c and not next(colores.items) then c = colores.nombres[r[R_NOMBRE]] end
+            if c and c.d and c.d < 3 then
+                -- Lo que recuperas: la venta neta si se vende, si no lo que paga el vendedor.
+                local recuperas, donde = r[R_VENTA] or 0, "subasta"
+                if r[R_VD] ~= nil and r[R_VD] < 1 then
+                    recuperas, donde = (PrecioVendedor(r[R_ITEM]) or 0), "vendedor"
+                end
+                local prob = DIF_PROB[c.d] * (c.s or 1)
+                local porPunto = (r[R_COSTE] - recuperas) / prob
+                table.insert(salida, { r = r, dif = c.d, aprendida = c.a, recuperas = recuperas, donde = donde,
+                    porPunto = porPunto, prob = DIF_PROB[c.d], conocida = c.a })
+            end
+        end
+    end
+    table.sort(salida, function(x, y)
+        local fx, fy = x.r[R_FALTA] and 1 or 0, y.r[R_FALTA] and 1 or 0
+        if fx ~= fy then return fx < fy end
+        return x.porPunto < y.porPunto
+    end)
+    return salida, prof, colores
 end
 
 local function LeerBolsas()
@@ -777,6 +877,17 @@ local function AlEntrarFila(fila)
     if not x or not GameTooltip then return end
     if estado.modo == "fabricar" then
         TooltipReceta(fila, x.r, x.conocida)
+    elseif estado.modo == "subir" then
+        TooltipReceta(fila, x.r, x.aprendida)
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddDoubleLine("Color ahora", DIF_COLOR[x.dif] .. DIF_NOMBRE[x.dif] .. FIN ..
+            string.format(" (sube un punto el %d%% de las veces)", math.floor(x.prob * 100 + 0.5)), 1, 1, 1, 1, 1, 1)
+        GameTooltip:AddDoubleLine("Recuperas al venderlo (" .. x.donde .. ")", Moneda(x.recuperas), 1, 1, 1, 1, 1, 1)
+        GameTooltip:AddDoubleLine("Coste neto por punto de habilidad", Moneda(x.porPunto), 1, 1, 1, 1, 1, 1)
+        if not x.aprendida then
+            GameTooltip:AddLine(NARANJA .. "Aún no la conoces: apréndela en el instructor o con su receta." .. FIN, 1, 1, 1, true)
+        end
+        GameTooltip:Show()
     elseif x.id or x.item then
         GameTooltip:SetOwner(fila, "ANCHOR_RIGHT")
         if GameTooltip.SetItemByID then GameTooltip:SetItemByID(x.id or x.item) end
@@ -786,7 +897,7 @@ end
 
 local function AlPulsarFila(fila)
     local x = fila.dato
-    if x and estado.modo == "fabricar" then PedirVecesYCrearLista(x.r) end
+    if x and (estado.modo == "fabricar" or estado.modo == "subir") then PedirVecesYCrearLista(x.r) end
 end
 
 local function AplicarColumnas()
@@ -829,6 +940,7 @@ local function Refrescar()
         if modo == "fabricar" then b:Show() else b:Hide() end
     end
     if modo == "cuentas" then ventana.botonPeriodo:Show() else ventana.botonPeriodo:Hide() end
+    if modo == "subir" then ventana.botonSubirProf:Show() else ventana.botonSubirProf:Hide() end
 
     local info, pie = "", ""
     if modo == "fabricar" then
@@ -844,6 +956,22 @@ local function Refrescar()
         end
         info = string.format("Datos de la subasta: %s · historial: %.1f días%s", D.ultimaDescarga or "?", D.dias or 0, aviso)
         pie = "Clic en una receta: lista de la compra · " .. ResumenMercado()
+    elseif modo == "subir" then
+        local prof, colores
+        lista, prof, colores = ListaSubir()
+        ventana.botonSubirProf:SetText("Profesión: " .. (prof and D.p[prof] or "ninguna"))
+        if not prof then
+            info = "No encuentro profesiones de fabricación en este personaje."
+        elseif not colores then
+            info = NARANJA .. "Abre la ventana de " .. D.p[prof] .. " para que lea el color de tus recetas." .. FIN
+        else
+            local hace = HorasDesde(colores.t)
+            local cuando = hace and (hace < 1 and string.format("hace %d min", math.floor(hace * 60)) or string.format("hace %.0f h", hace)) or "?"
+            local mejor = lista[1]
+            info = string.format("%s nivel %s · colores leídos %s%s", D.p[prof], tostring(colores.nivel or "?"), cuando,
+                mejor and (" · lo más barato: " .. mejor.r[R_NOMBRE] .. " a " .. Moneda(mejor.porPunto) .. " por punto") or "")
+        end
+        pie = "Coste por punto = (materiales - lo que recuperas al venderlo) / probabilidad de subir. Negativo = ganas oro. Clic: lista de la compra."
     elseif modo == "vender" then
         local total
         lista, total = ListaVender()
@@ -882,6 +1010,18 @@ local function Refrescar()
             c[5]:SetText(TendenciaCorta(di and di[I_T7]))
             c[6]:SetText(MonedaCorta(r[R_COSTE]))
             c[7]:SetText(MonedaCorta(r[R_VENTA]))
+            fila:Show()
+        elseif modo == "subir" then
+            local r = x.r
+            local nombre = (x.aprendida and BLANCO or GRIS) .. r[R_NOMBRE] .. FIN
+            if r[R_FALTA] then nombre = nombre .. ROJO .. " *" .. FIN end
+            c[1]:SetText(nombre)
+            c[2]:SetText(DIF_COLOR[x.dif] .. DIF_NOMBRE[x.dif] .. FIN .. GRIS .. string.format(" %d%%", math.floor(x.prob * 100 + 0.5)) .. FIN)
+            c[3]:SetText(MonedaCorta(r[R_COSTE]))
+            c[4]:SetText(MonedaCorta(x.recuperas))
+            c[5]:SetText(x.porPunto <= 0 and (VERDE .. "gana " .. FIN .. MonedaCorta(-x.porPunto)) or MonedaCorta(x.porPunto))
+            c[6]:SetText(Ventas(r[R_VD]))
+            c[7]:SetText(x.aprendida and "" or (NARANJA .. "aprender" .. FIN))
             fila:Show()
         elseif modo == "vender" then
             local d = D.i and D.i[x.id]
@@ -967,7 +1107,8 @@ local function CrearVentana()
     -- Pestañas
     f.pestanas = {}
     local anterior
-    for _, p in ipairs({ { "fabricar", "Qué fabricar" }, { "vender", "Qué vender" }, { "cuentas", "Mis cuentas" } }) do
+    for _, p in ipairs({ { "fabricar", "Qué fabricar" }, { "subir", "Subir profesión" }, { "vender", "Qué vender" },
+        { "cuentas", "Mis cuentas" } }) do
         local b = CrearBoton(f, 120, function() CambiarModo(p[1]) end)
         b:SetText(p[2])
         if anterior then b:SetPoint("LEFT", anterior, "RIGHT", 4, 0) else b:SetPoint("TOPLEFT", 14, -28) end
@@ -1017,6 +1158,18 @@ local function CrearVentana()
         Refrescar()
     end)
     f.botonPeriodo:SetPoint("TOPLEFT", 14, -74)
+
+    -- Filtro de "Subir profesión"
+    f.botonSubirProf = CrearBoton(f, 220, function()
+        local profs = ProfesionesParaSubir()
+        if #profs == 0 then return end
+        local actual = 1
+        for i, p in ipairs(profs) do if p == estado.profSubir then actual = i end end
+        estado.profSubir = profs[actual % #profs + 1]
+        estado.offset = 0
+        Refrescar()
+    end)
+    f.botonSubirProf:SetPoint("TOPLEFT", 14, -74)
 
     f.cabeceras = {}
     for i = 1, NUM_COLUMNAS do
@@ -1087,36 +1240,31 @@ end
 -- Botones en la ventana de profesiones y en la subasta
 ---------------------------------------------------------------------------
 
-local function ProfesionAbierta()
-    local T = C_TradeSkillUI
-    if T and T.GetBaseProfessionInfo then
-        local ok, info = pcall(T.GetBaseProfessionInfo)
-        if ok and info and info.professionID and D.p[info.professionID] then return info.professionID end
-    end
-    if T and T.GetTradeSkillLine then
-        local ok, linea = pcall(T.GetTradeSkillLine)
-        if ok and linea and D.p[linea] then return linea end
-    end
-    return nil
-end
-
-local function BotonEn(marco, texto, alClic)
-    if not marco or marco.ForeverSubastasBoton then return end
+local function BotonEn(marco, texto, alClic, clave, desplazamiento)
+    clave = clave or "ForeverSubastasBoton"
+    if not marco or marco[clave] then return end
     local ok, b = pcall(CreateFrame, "Button", nil, marco, "UIPanelButtonTemplate")
     if not ok or not b then return end
     b:SetSize(120, 22)
     b:SetText(texto)
-    b:SetPoint("TOPRIGHT", marco, "TOPRIGHT", -30, -26)
+    b:SetPoint("TOPRIGHT", marco, "TOPRIGHT", -30 - (desplazamiento or 0), -26)
     b:SetFrameStrata("HIGH")
     b:SetScript("OnClick", alClic)
-    marco.ForeverSubastasBoton = b
+    marco[clave] = b
+end
+
+local function AbrirSubir()
+    local prof = ProfesionAbierta()
+    if prof then estado.profSubir = prof end
+    pcall(LeerRecetasConocidas)
+    FS.Mostrar(nil, "subir")
 end
 
 local function CrearBotonesExternos()
-    if ProfessionsFrame then
-        BotonEn(ProfessionsFrame, "Rentabilidad", function() FS.Mostrar(ProfesionAbierta() or "mias", "fabricar") end)
-    elseif TradeSkillFrame then
-        BotonEn(TradeSkillFrame, "Rentabilidad", function() FS.Mostrar(ProfesionAbierta() or "mias", "fabricar") end)
+    local marcoProf = ProfessionsFrame or TradeSkillFrame
+    if marcoProf then
+        BotonEn(marcoProf, "Rentabilidad", function() FS.Mostrar(ProfesionAbierta() or "mias", "fabricar") end)
+        BotonEn(marcoProf, "Subir profesión", AbrirSubir, "ForeverSubastasBotonSubir", 124)
     end
     if AuctionHouseFrame then
         BotonEn(AuctionHouseFrame, "Qué vender", function() FS.Mostrar(nil, "vender") end)
@@ -1188,9 +1336,11 @@ SlashCmdList = SlashCmdList or {}
 SlashCmdList["FOREVERSUBASTAS"] = function(texto)
     texto = (texto or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
     if texto == "ayuda" or texto == "help" then
-        Imprimir("/subastas abre la ventana (qué fabricar, qué vender y tus cuentas). /subastas vender y /subastas cuentas van directos a esas pestañas. Pasa el ratón por cualquier objeto para ver precios, tendencia, mejores horas y a cuánto venderlo. Abre tus profesiones una vez para que sepa qué recetas conoces.")
+        Imprimir("/subastas abre la ventana (qué fabricar, qué vender y tus cuentas). /subastas subir, /subastas vender y /subastas cuentas van directos a esas pestañas. Pasa el ratón por cualquier objeto para ver precios, tendencia, mejores horas y a cuánto venderlo. Abre tus profesiones una vez para que sepa qué recetas conoces.")
     elseif texto == "vender" then
         FS.Mostrar(nil, "vender")
+    elseif texto == "subir" then
+        FS.Mostrar(nil, "subir")
     elseif texto == "cuentas" then
         FS.Mostrar(nil, "cuentas")
     elseif texto == "todas" then

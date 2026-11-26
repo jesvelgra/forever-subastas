@@ -64,10 +64,14 @@ TOOLTIP_CB = nil
 TooltipDataProcessor = { AddTooltipPostCall = function(tipo, fn) TOOLTIP_CB = fn end }
 Enum = { TooltipDataType = { Item = 0 } }
 C_TradeSkillUI = {
-  GetAllRecipeIDs = function() return { 2330, 2331 } end,
-  GetRecipeInfo = function(id) return { learned = id == 2330, name = id == 2330 and "Poción de curación menor" or "Otra" } end,
-  GetRecipeOutputItemData = function(id) return { itemID = id == 2330 and 118 or 999 } end,
-  GetBaseProfessionInfo = function() return { professionID = 171 } end,
+  GetAllRecipeIDs = function() return { 2330, 2331, 2332 } end,
+  GetRecipeInfo = function(id)
+    if id == 2330 then return { learned = true, name = "Poción de curación menor", relativeDifficulty = 3 } end
+    if id == 2331 then return { learned = true, name = "Elixir de fuerza menor", relativeDifficulty = 0 } end
+    return { learned = false, name = "Poción menor de maná", relativeDifficulty = 1 }
+  end,
+  GetRecipeOutputItemData = function(id) return { itemID = ({ [2330] = 118, [2331] = 2454, [2332] = 2455 })[id] } end,
+  GetBaseProfessionInfo = function() return { professionID = 171, skillLevel = 180, maxSkillLevel = 225 } end,
 }
 ProfessionsFrame = mock("ProfessionsFrame")
 C_Container = {
@@ -133,6 +137,15 @@ if v.filas[1].dato then v.filas[1]._scripts.OnEnter(v.filas[1]) end
 -- Clic en la primera receta: lista de la compra
 v.filas[1]._scripts.OnClick(v.filas[1], "LeftButton")
 
+-- Pestaña Subir profesión
+v.pestanas.subir._scripts.OnClick(v.pestanas.subir)
+FILAS_SUBIR = visibles()
+SUBIR_1 = v.filas[1].c[1]._texto .. " | " .. tostring(v.filas[1].c[2]._texto) .. " | " .. tostring(v.filas[1].c[5]._texto)
+INFO_SUBIR = v.info._texto
+v.filas[1]._scripts.OnEnter(v.filas[1])
+v.filas[1]._scripts.OnClick(v.filas[1], "LeftButton")
+v.botonSubirProf._scripts.OnClick(v.botonSubirProf)
+
 -- Pestaña Qué vender
 v.pestanas.vender._scripts.OnClick(v.pestanas.vender)
 FILAS_VENDER = visibles()
@@ -173,6 +186,8 @@ def main() -> int:
     print("Filas en Qué fabricar:", g.FILAS_FABRICAR)
     if g.LISTA_AUCTIONATOR:
         print("Lista Auctionator:", g.LISTA_AUCTIONATOR.nombre, list(g.LISTA_AUCTIONATOR.cadenas.values()))
+    print("Subir profesión:", g.FILAS_SUBIR, "filas ·", g.SUBIR_1)
+    print("   ", g.INFO_SUBIR)
     print("Qué vender:", g.FILAS_VENDER, "filas ·", g.VENDER_1)
     print("   ", g.INFO_VENDER)
     print("Mis cuentas:", g.FILAS_CUENTAS, "filas ·", g.CUENTAS_1)
@@ -185,6 +200,8 @@ def main() -> int:
     assert any("Tendencia" in l for l in lineas), "el tooltip no muestra la tendencia"
     assert any("Para vender" in l for l in lineas), "el tooltip no muestra el consejo de venta"
     assert g.POPUP == "FOREVERSUBASTAS_LISTA", "no se abrió la ventana de la lista de la compra"
+    assert g.FILAS_SUBIR == 2, "Subir profesión debería listar las 2 recetas naranja/amarilla (la gris no)"
+    assert any("Coste neto por punto" in l for l in lineas), "falta el coste por punto en el tooltip"
     assert g.FILAS_VENDER == 2, "Qué vender debería listar 2 objetos (el ligado no)"
     assert g.NUM_OPS == 4, f"deberían registrarse 4 operaciones (venta, compra correo, compra bienes, publicación), hay {g.NUM_OPS}"
     print("OK")
