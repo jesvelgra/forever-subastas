@@ -3,19 +3,19 @@
  "conjuntos": [
   {
    "id": 1,
-   "nombre": ""
+   "nombre": "PvP"
   },
   {
    "id": 15,
-   "nombre": ""
+   "nombre": "Roleplay PvP"
   },
   {
    "id": 3,
-   "nombre": ""
+   "nombre": "Roleplay"
   },
   {
    "id": 2,
-   "nombre": ""
+   "nombre": "Normal"
   }
  ],
  "casas": {
