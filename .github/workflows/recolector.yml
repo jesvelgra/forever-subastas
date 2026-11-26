@@ -36,7 +36,8 @@ jobs:
           BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
           REGION: ${{ vars.REGION || 'eu' }}
           FACCION: ${{ vars.FACCION || 'Alliance' }}
-          CASAS: ${{ vars.CASAS }}
+          # 110 y 111 son las dos grandes de la Alianza (JcJ y Normal); 119 y 123, las de rol.
+          CASAS: ${{ vars.CASAS || '110,111' }}
         run: python recolector/recolector.py
 
       - name: Guardar esta descarga para la próxima hora

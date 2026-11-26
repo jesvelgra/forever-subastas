@@ -157,7 +157,9 @@ def _lista_con_ids(datos: dict, clave_preferida: str) -> list[dict]:
 def descubrir_casas(api: Api) -> tuple[list[dict], dict[int, dict]]:
     """Devuelve (conjuntos de reglas, casas). Cada casa: {nombre, conjuntos: [ids]}."""
     indice, _ = api.get("/data/wow/ruleset/index")
-    conjuntos = [{"id": r["id"], "nombre": _nombre(r.get("name"))}
+    conocidos = {1: "PvP", 2: "Normal", 3: "Roleplay", 15: "Roleplay PvP"}
+    conjuntos = [{"id": r["id"],
+                  "nombre": _nombre(r.get("name") or r.get("key", {}).get("name")) or conocidos.get(r["id"], "")}
                  for r in _lista_con_ids(indice, "rulesets")]
     casas: dict[int, dict] = {}
     for conjunto in conjuntos:
