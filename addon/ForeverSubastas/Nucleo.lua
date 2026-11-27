@@ -481,7 +481,7 @@ local function AnadirTooltip(tt, id)
     local etiqueta = "Mínimo ahora"
     if fuente == "vivo" then etiqueta = "Mínimo (tu escaneo " .. (date and date("%H:%M", v.t) or "") .. ")" end
     tt:AddDoubleLine(etiqueta, minimo and Moneda(minimo) or (GRIS .. "no hay a la venta" .. FIN), 1, 1, 1, 1, 1, 1)
-    local pv = d[I_VEND]
+    local pv = PagaVendedor(id)
     if pv and minimo and minimo < pv * 0.98 then
         tt:AddDoubleLine(VERDE .. "¡Chollo! El vendedor paga " .. FIN .. Moneda(pv),
             VERDE .. "ganas " .. FIN .. Moneda(pv - minimo) .. VERDE .. " por unidad" .. FIN, 1, 1, 1, 1, 1, 1)
@@ -932,13 +932,16 @@ local function VenderChollos()
     end
     local C = C_Container
     if not (C and C.GetContainerNumSlots and C.GetContainerItemInfo and C.UseContainerItem) then return end
-    local unidades, cobre = 0, 0
+    local unidades, cobre, mezcladas = 0, 0, 0
     for bolsa = 0, 5 do
         for hueco = 1, C.GetContainerNumSlots(bolsa) or 0 do
             local info = C.GetContainerItemInfo(bolsa, hueco)
             local id = info and info.itemID
-            if id and (pendientes[id] or 0) > 0 and not info.isLocked and not info.hasNoValue then
-                local cant = info.stackCount or 1
+            local cant = info and info.stackCount or 1
+            -- Solo montones que no superan lo comprado como chollo: no vender lo tuyo que esté mezclado.
+            if id and (pendientes[id] or 0) > 0 and cant > pendientes[id] then
+                mezcladas = mezcladas + pendientes[id]
+            elseif id and (pendientes[id] or 0) > 0 and not info.isLocked and not info.hasNoValue then
                 C.UseContainerItem(bolsa, hueco)
                 pendientes[id] = math.max(0, pendientes[id] - cant)
                 if pendientes[id] == 0 then pendientes[id] = nil end
@@ -949,9 +952,12 @@ local function VenderChollos()
             end
         end
     end
+    if mezcladas > 0 then
+        Imprimir(string.format("%d unidades de chollo están en montones junto con otras tuyas: sepáralas y vuelve a pulsar, o véndelas a mano.", mezcladas))
+    end
     if unidades > 0 then
         Imprimir(string.format("vendidas %d unidades compradas como chollo por %s.", unidades, Moneda(cobre)))
-    else
+    elseif mezcladas == 0 then
         Imprimir("no llevas encima los chollos pendientes (¿siguen en el buzón?).")
     end
 end

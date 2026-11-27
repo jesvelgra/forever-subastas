@@ -131,6 +131,16 @@ C_SuperTrack = { SetSuperTrackedUserWaypoint = function() end }
 UiMapPoint = { CreateFromCoordinates = function() return {} end }
 SHIFT = false
 IsShiftKeyDown = function() return SHIFT end
+-- Escaneo completo y vendedor
+C_Timer = { After = function(_, f) f() end }
+C_AuctionHouse.GetNumReplicateItems = function() return 2 end
+C_AuctionHouse.GetReplicateItemInfo = function(k)
+  if k == 0 then return "Flor de paz", 0, 20, 1, true, 1, 0, 0, 0, 100, 0, false, nil, "x", "x", 0, 2447, true end
+  return "Poción", 0, 5, 1, true, 1, 0, 0, 0, 5000, 0, false, nil, "x", "x", 0, 118, true
+end
+MerchantFrame = MOCK("MerchantFrame")
+VENDIDOS = {}
+C_Container.UseContainerItem = function(b, s) table.insert(VENDIDOS, s) end
 -- Auctionator
 LISTA_AUCTIONATOR = nil
 Auctionator = { API = { v1 = {
@@ -217,6 +227,31 @@ NUM_OPS = #ForeverSubastas.Cuentas().ops
 
 v.pestanas.subir._scripts.OnClick(v.pestanas.subir)
 v.botonSubirProf._scripts.OnClick(v.botonSubirProf)
+-- Escaneo completo de Auctionator: precios en vivo y chollos (Flor de paz a 5c, el vendedor paga 10c)
+ev._scripts.OnEvent(ev, "REPLICATE_ITEM_LIST_UPDATE")
+LINEAS_ANTES = #LINEAS
+TOOLTIP_CB(GameTooltip, { id = 2447 })
+v.pestanas.chollos._scripts.OnClick(v.pestanas.chollos)
+FILAS_CHOLLOS = visibles()
+CHOLLOS_1 = v.filas[1].c[1]._texto .. " | " .. tostring(v.filas[1].c[2]._texto) .. " | " .. tostring(v.filas[1].c[6]._texto)
+INFO_CHOLLOS = v.info._texto
+LISTA_AUCTIONATOR = nil
+v.botonListaChollos._scripts.OnClick(v.botonListaChollos)
+LISTA_CHOLLOS = LISTA_AUCTIONATOR and LISTA_AUCTIONATOR.nombre
+-- Compra de 5 Flores de paz a 5c: es un chollo
+ev._scripts.OnEvent(ev, "COMMODITY_PRICE_UPDATED", 5, 25)
+HOOKS.ConfirmCommoditiesPurchase(2447, 5)
+ev._scripts.OnEvent(ev, "COMMODITY_PURCHASE_SUCCEEDED")
+PENDIENTES_2447 = ForeverSubastas.Cuentas().chollos[2447]
+-- En el vendedor: el montón de 20 está mezclado con las tuyas, no se vende
+MerchantFrame._shown = true
+ForeverSubastas.VenderChollos()
+VENDIDOS_MEZCLA = #VENDIDOS
+-- Si el montón es solo de chollos (5), sí
+C_Container.GetContainerItemInfo = function(b, s) if s == 1 then return { itemID = 2447, stackCount = 5 } end end
+ForeverSubastas.VenderChollos()
+VENDIDOS_SOLO = #VENDIDOS
+
 local pj = ForeverSubastas.Personaje()
 CONOCE_118 = pj.conocidas[118] and true or false
 PROF_171 = pj.profs[171]
@@ -246,6 +281,11 @@ def main() -> int:
     print("Mis cuentas:", g.FILAS_CUENTAS, "filas ·", g.CUENTAS_1)
     print("   ", g.INFO_CUENTAS)
     print("Operaciones registradas:", g.NUM_OPS)
+    print("Chollos:", g.FILAS_CHOLLOS, "filas ·", g.CHOLLOS_1, "·", g.INFO_CHOLLOS)
+    print("Lista de chollos:", g.LISTA_CHOLLOS, "· pendientes de vender:", g.PENDIENTES_2447,
+          "· vendidos mezclados/solos:", g.VENDIDOS_MEZCLA, g.VENDIDOS_SOLO)
+    nuevas = list(g.LINEAS.values())[g.LINEAS_ANTES:]
+    print("Tooltip tras escanear:", [l for l in nuevas if "Mínimo" in l or "Chollo" in l])
     assert g.CONOCE_118 is True, "no registró la receta conocida"
     assert g.PROF_171 == 180, "no registró la profesión"
     assert any("Subasta Alianza JcJ" in l for l in lineas), "el tooltip no añade datos"
@@ -264,7 +304,13 @@ def main() -> int:
     chat = list(g.CHAT.values())
     assert any("ya está" in m and "verde" in m for m in chat), "no avisó del cambio a verde"
     assert g.FILAS_VENDER == 2, "Qué vender debería listar 2 objetos (el ligado no)"
-    assert g.NUM_OPS == 4, f"deberían registrarse 4 operaciones (venta, compra correo, compra bienes, publicación), hay {g.NUM_OPS}"
+    assert g.FILAS_CHOLLOS >= 1 and "Tu escaneo" in g.INFO_CHOLLOS, "la pestaña Chollos no usa el escaneo"
+    assert g.LISTA_CHOLLOS == "FS Chollos vendedor", "no creó la lista de chollos"
+    assert g.PENDIENTES_2447 == 5, "no apuntó la compra como chollo"
+    assert g.VENDIDOS_MEZCLA == 0 and g.VENDIDOS_SOLO == 1, "venta al vendedor incorrecta"
+    nuevas = list(g.LINEAS.values())[g.LINEAS_ANTES:]
+    assert any("tu escaneo" in l for l in nuevas) and any("Chollo" in l for l in nuevas), "el tooltip no usa el escaneo"
+    assert g.NUM_OPS >= 4, f"deberían registrarse 4 operaciones (venta, compra correo, compra bienes, publicación), hay {g.NUM_OPS}"
     print("OK")
     return 0
 
