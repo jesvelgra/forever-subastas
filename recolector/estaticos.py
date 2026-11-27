@@ -166,8 +166,12 @@ def main() -> int:
     pendientes = [i for i in vistos if i not in items]
     print(f"Objetos vistos en la subasta sin ficha: {len(pendientes)}")
     patrones = {}
+    # Lo que paga el vendedor por cada objeto (para detectar chollos: subasta por debajo del vendedor).
+    precio_vendedor = {iid: it["venta"] for iid, it in items.items() if it.get("venta")}
     with ThreadPoolExecutor(max_workers=8) as ex:
         for iid, d in ex.map(leer_item, pendientes):
+            if d and d.get("sell_price"):
+                precio_vendedor[iid] = d["sell_price"]
             if not d or (d.get("item_class") or {}).get("id") != 9:
                 continue
             req = ((d.get("preview_item") or {}).get("requirements") or {}).get("skill") or {}
@@ -180,6 +184,9 @@ def main() -> int:
         items[iid] = {"n": pat["n"], "cal": pat["cal"], "venta": pat["venta"], "clase": "Receta", "nivel_req": pat["nivel"]}
 
     salida.parent.mkdir(parents=True, exist_ok=True)
+    ruta_pv = salida.parent / "precio_vendedor.json"
+    ruta_pv.write_text(json.dumps({str(k): v for k, v in sorted(precio_vendedor.items())}, separators=(",", ":")), "utf-8")
+    print(f"Precio de vendedor conocido para {len(precio_vendedor)} objetos")
     datos = {"profesiones": profesiones,
              "recetas": {str(k): v for k, v in sorted(recetas_por_id.items())},
              "items": {str(k): v for k, v in sorted(items.items())}}
