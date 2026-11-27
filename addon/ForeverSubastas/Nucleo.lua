@@ -1611,7 +1611,7 @@ local function Refrescar()
             info = string.format("Datos de las %s: %d objetos por debajo del vendedor. " ..
                 "Haz un escaneo completo en Auctionator para verlos al momento y con cantidades.", D.ultimaDescarga or "?", #lista)
         end
-        pie = "Compra con la lista de Auctionator y luego en cualquier vendedor pulsa "Vender chollos". Clic en una fila: lista solo de ese objeto."
+        pie = "Compra con la lista de Auctionator y luego en cualquier vendedor pulsa 'Vender chollos'. Clic en una fila: lista solo de ese objeto."
     elseif modo == "vender" then
         local total
         lista, total = ListaVender()
