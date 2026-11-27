@@ -99,9 +99,18 @@ def _peticion(url: str, *, cabeceras: dict | None = None, datos: bytes | None = 
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 cuerpo = resp.read()
-                if resp.headers.get("Content-Encoding") == "gzip":
+                cabeceras_resp = dict(resp.headers)
+            try:
+                if cabeceras_resp.get("Content-Encoding") == "gzip" or cuerpo[:2] == b"\x1f\x8b":
                     cuerpo = gzip.decompress(cuerpo)
-                return json.loads(cuerpo), dict(resp.headers)
+                return json.loads(cuerpo), cabeceras_resp
+            except (OSError, EOFError, ValueError) as e:
+                # Respuesta cortada o dañada: se reintenta como un error temporal.
+                if intento < intentos:
+                    time.sleep(espera)
+                    espera *= 2
+                    continue
+                raise ErrorApi(0, url, f"respuesta dañada: {e}") from None
         except urllib.error.HTTPError as e:
             texto = e.read().decode("utf-8", "replace") if e.fp else ""
             if e.code in (429, 500, 502, 503, 504) and intento < intentos:

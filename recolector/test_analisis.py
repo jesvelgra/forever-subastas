@@ -134,6 +134,20 @@ class PruebasPrecioRecomendado(unittest.TestCase):
             self.assertEqual(res["mercado"]["curvas"]["c"][1], 90)
 
 
+class PruebasChollos(unittest.TestCase):
+    def test_marca_lo_que_esta_por_debajo_del_vendedor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dd = Path(tmp) / "datos"
+            simular(dd, 2, datetime(2026, 11, 20, 0, 21, tzinfo=timezone.utc))
+            ahora = datetime(2026, 11, 22, 0, 30, tzinfo=timezone.utc)
+            # La hierba se vende al vendedor por 98c y su mínimo va de 75 a 125: chollo casi siempre;
+            # la poción (mínimo 900) por 500c: nunca.
+            res = a.analizar(dd, 110, ahora=ahora, precio_vendedor={HIERBA: 98, POCION: 500})
+            self.assertEqual(res["items"][HIERBA]["vend"], 98)
+            self.assertGreater(res["items"][HIERBA]["chollo_pct"], 90)
+            self.assertEqual(res["items"][POCION]["chollo_pct"], 0)
+
+
 class PruebasNivelRequerido(unittest.TestCase):
     def test_no_confunde_el_tramo_con_el_nivel(self):
         self.assertIsNone(a.nivel_requerido({"nivel": 2937}))

@@ -286,7 +286,8 @@ def precio_recomendado(ref: int | None, curva: list[float | None]) -> tuple[int 
     return round(ref * mejor[1]), mejor[1], round(mejor[2] * 100)
 
 
-def analizar(dir_datos: Path, casa: int, ahora: datetime | None = None, semilla: dict | None = None) -> dict:
+def analizar(dir_datos: Path, casa: int, ahora: datetime | None = None, semilla: dict | None = None,
+             precio_vendedor: dict | None = None) -> dict:
     ahora = ahora or datetime.now(timezone.utc)
     ficheros = listar_ficheros(dir_datos, casa, ahora - timedelta(days=DIAS_HISTORIAL))
     if not ficheros:
@@ -296,10 +297,21 @@ def analizar(dir_datos: Path, casa: int, ahora: datetime | None = None, semilla:
     ultimo: dict[str, tuple[datetime, list[dict]]] = {}
     p10_24h = defaultdict(list)
     serie_31h = defaultdict(list)
+    precio_vendedor = precio_vendedor or {}
+    # Chollos: en cuántas descargas de los últimos 7 días el mínimo estuvo por debajo de lo que paga el vendedor.
+    chollo_veces: dict[int, int] = defaultdict(int)
+    descargas_7d: dict[str, int] = defaultdict(int)
     for ts, tipo, ruta in ficheros:
         filas = leer_csv(ruta)
         acc.añadir(ts, tipo, filas)
         ultimo[tipo] = (ts, filas)
+        if precio_vendedor and ts >= ahora - timedelta(days=DIAS_VENTAS):
+            descargas_7d[tipo] += 1
+            for f in filas:
+                if f["min"]:
+                    pv = precio_vendedor.get(int(f["item"]))
+                    if pv and int(f["min"]) < pv * 0.98:
+                        chollo_veces[int(f["item"])] += 1
         if ts >= ahora - timedelta(hours=31):
             for f in filas:
                 if f["p10"]:
@@ -366,6 +378,13 @@ def analizar(dir_datos: Path, casa: int, ahora: datetime | None = None, semilla:
         info.update(rec=precio, rec_prob=prob)
         if total >= MIN_UDS_CURVA_ITEM and all(x is not None for x in curva):
             info["curva"] = [round(x * 100) for x in curva]
+
+    for item, info in items.items():
+        pv = precio_vendedor.get(item)
+        if pv:
+            info["vend"] = pv
+            n = descargas_7d.get(info["tipo"], 0)
+            info["chollo_pct"] = round(chollo_veces.get(item, 0) / n * 100) if n else None
 
     hoy = ultimo_ts.astimezone(ZONA).date()
     semilla = semilla or {}
@@ -525,7 +544,7 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
         "-- i[id] = {min, compra24h, precioVentaReal, ventasDia, unidadesALaVenta,",
         "--          horaBarata, horaCara, %barata, %cara, diaBarato, diaCaro, %diaBarato, %diaCaro, diasConVenta,",
         "--          tendencia24h%, tendencia7dias%, horaConMasVentas, precioRecomendado, %ventaAEsePrecio,",
-        "--          {%venta por tramo de precio}}",
+        "--          {%venta por tramo de precio}, loQuePagaElVendedor, %horasPorDebajoDelVendedor(7 días)}",
         "-- tramos de precio (respecto al precio habitual): " + ", ".join(f"{x:g}" for x in RATIO_TRAMO),
         "-- r = {{id, profesion, nombre, item, cantidad, coste, venta, beneficio, ventasDia, donde,",
         "--       {{reactivo, cantidad, precioUnidad, 'v'=vendedor|'s'=subasta}, ...}, faltanPrecios,",
@@ -535,6 +554,7 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
         f"  casa = {res['casa']},",
         f"  generado = {_lua_str(res['ahora'].astimezone(ZONA).strftime('%d/%m %H:%M'))},",
         f"  ultimaDescarga = {_lua_str(res['ultimo'].astimezone(ZONA).strftime('%d/%m %H:%M'))},",
+        f"  ultimaDescargaTs = {int(res['ultimo'].timestamp())},",
         f"  generadoTs = {int(res['ahora'].timestamp())},",
         f"  dias = {_lua_val(res['dias'])},",
         f"  mercado = {{ precioHora = {_lua_val(res['mercado']['precio_h'])}, ventasHora = {_lua_val(res['mercado']['ventas_h'])},",
@@ -550,7 +570,7 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
                 d.get("bh"), d.get("sh"), d.get("ab") or None, d.get("as_") or None,
                 d.get("bd"), d.get("sd"), d.get("adb") or None, d.get("ads") or None,
                 d.get("dias_venta"), d.get("t24"), d.get("t7"), d.get("hv"), d.get("rec"), d.get("rec_prob"),
-                d.get("curva")]
+                d.get("curva"), d.get("vend"), d.get("chollo_pct") or None]
         lineas.append(f"    [{iid}]={_lua_val(fila)},")
     lineas.append("  },")
     lineas.append("  p = {")
@@ -597,7 +617,9 @@ def main() -> int:
     dir_datos = base / "datos"
     casa = int(os.environ.get("CASA", "110"))
     semilla = cargar_historial_semilla(dir_datos / "estaticos" / "auctionator_historial.json.gz")
-    res = analizar(dir_datos, casa, semilla=semilla)
+    ruta_pv = dir_datos / "estaticos" / "precio_vendedor.json"
+    precio_vendedor = {int(k): v for k, v in json.loads(ruta_pv.read_text("utf-8")).items()} if ruta_pv.exists() else {}
+    res = analizar(dir_datos, casa, semilla=semilla, precio_vendedor=precio_vendedor)
 
     ruta_est = dir_datos / "estaticos" / "recetas.json"
     estaticos = json.loads(ruta_est.read_text("utf-8")) if ruta_est.exists() else {}
@@ -610,6 +632,8 @@ def main() -> int:
     escribir_csv_recetas(dir_datos / "analisis" / "recetas.csv", recetas, estaticos)
     con_ventas = sum(1 for d in res["items"].values() if d.get("vd"))
     con_tendencia = sum(1 for d in res["items"].values() if d.get("t7") is not None)
+    chollos = [i for i, d in res["items"].items() if d.get("vend") and d.get("min") and d["min"] < d["vend"] * 0.98]
+    print(f"Chollos ahora (subasta por debajo del vendedor): {len(chollos)}")
     print(f"Casa {casa}: {res['dias']} días de historial, {len(res['items'])} objetos, "
           f"{con_ventas} con ventas medidas, {con_tendencia} con tendencia semanal, {len(recetas)} recetas")
     return 0

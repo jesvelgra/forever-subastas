@@ -17,6 +17,7 @@ local AMARILLO, GRIS, VERDE, ROJO, NARANJA, BLANCO, FIN =
 -- Posiciones dentro de D.i[id]
 local I_MIN, I_CMP, I_PV, I_VD, I_CANT, I_BH, I_SH, I_AB, I_AS, I_BD, I_SD = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 local I_T24, I_T7, I_HV, I_REC, I_RECP, I_CURVA = 15, 16, 17, 18, 19, 20
+local I_VEND, I_CHOLLO = 21, 22
 -- Posiciones dentro de cada receta de D.r
 local R_PROF, R_NOMBRE, R_ITEM, R_COSTE, R_VENTA, R_BENEF, R_VD, R_DONDE, R_REAG, R_FALTA = 2, 3, 4, 6, 7, 8, 9, 10, 11, 12
 local R_PATRON, R_NIVEL = 13, 14
@@ -133,6 +134,27 @@ local function PrecioVendedor(id)
     return nil
 end
 
+-- Lo que paga el vendedor por una unidad: de los datos de la API o, si no, del juego.
+local function PagaVendedor(id)
+    local d = D and D.i and D.i[id]
+    return (d and d[I_VEND]) or PrecioVendedor(id)
+end
+FS.PagaVendedor = PagaVendedor
+
+-- Precios "en vivo": los que ve el addon cuando escaneas la subasta (con Auctionator o a mano).
+-- vivo.items[id] = { min, cant, bajo (uds. por debajo del vendedor), coste, valor (lo que pagaría el vendedor), t }
+local vivo = { t = 0, items = {} }
+FS.vivo = vivo
+
+local function MinimoActual(id)
+    local v = vivo.items[id]
+    local d = D and D.i and D.i[id]
+    local tDatos = D and (D.ultimaDescargaTs or D.generadoTs) or 0
+    if v and v.t and v.t > tDatos and v.min then return v.min, "vivo", v end
+    return d and d[I_MIN], "datos", nil
+end
+FS.MinimoActual = MinimoActual
+
 local function ContarObjeto(id)
     if C_Item and C_Item.GetItemCount then
         local ok, n = pcall(C_Item.GetItemCount, id, true)
@@ -191,6 +213,13 @@ FS.Cuentas = Cuentas
 
 local function Anotar(tipo, item, nombre, cant, total)
     local cu = Cuentas()
+    if tipo == "compra" and item and cant and cant > 0 and total and total > 0 then
+        local pv = PagaVendedor(item)
+        if pv and total / cant < pv * 0.98 then
+            cu.chollos = cu.chollos or {}
+            cu.chollos[item] = (cu.chollos[item] or 0) + cant
+        end
+    end
     table.insert(cu.ops, { t = time and time() or 0, tipo = tipo, item = item, n = nombre or (item and NombreObjeto(item)),
         c = cant or 1, m = total or 0, pj = ClavePersonaje() })
     while #cu.ops > MAX_OPERACIONES do table.remove(cu.ops, 1) end
@@ -364,7 +393,9 @@ local function ConsejoVenta(id)
         if vendedor then return { precio = vendedor, accion = "vendedor", texto = "Véndelo al vendedor" } end
         return nil
     end
-    local precio = d[I_REC] or d[I_MIN] or d[I_CMP]
+    local minimo = MinimoActual(id)
+    local precio = d[I_REC] or minimo or d[I_CMP]
+    if d[I_REC] and minimo and minimo < d[I_REC] * 0.9 then precio = minimo end
     if not precio then
         if vendedor then return { precio = vendedor, accion = "vendedor", texto = "Véndelo al vendedor" } end
         return nil
@@ -378,10 +409,10 @@ local function ConsejoVenta(id)
         c.accion, c.texto = "nosevende", "Casi no se vende"
         return c
     end
-    if d[I_PV] and d[I_MIN] and d[I_MIN] < d[I_PV] * 0.85 then
+    if d[I_PV] and minimo and minimo < d[I_PV] * 0.85 then
         c.precio = d[I_PV]
         c.accion = "espera"
-        c.texto = string.format("Espera: hoy está un %.0f%% por debajo de lo que se paga", (1 - d[I_MIN] / d[I_PV]) * 100)
+        c.texto = string.format("Espera: ahora está un %.0f%% por debajo de lo que se paga", (1 - minimo / d[I_PV]) * 100)
         return c
     end
     local hora = HoraActual()
@@ -446,7 +477,15 @@ local function AnadirTooltip(tt, id)
     if not d then return end
     tt:AddLine(" ")
     tt:AddLine(AMARILLO .. "Subasta Alianza JcJ" .. FIN .. GRIS .. "  (datos " .. (D.ultimaDescarga or "?") .. ")" .. FIN)
-    tt:AddDoubleLine("Mínimo ahora", d[I_MIN] and Moneda(d[I_MIN]) or (GRIS .. "no hay a la venta" .. FIN), 1, 1, 1, 1, 1, 1)
+    local minimo, fuente, v = MinimoActual(id)
+    local etiqueta = "Mínimo ahora"
+    if fuente == "vivo" then etiqueta = "Mínimo (tu escaneo " .. (date and date("%H:%M", v.t) or "") .. ")" end
+    tt:AddDoubleLine(etiqueta, minimo and Moneda(minimo) or (GRIS .. "no hay a la venta" .. FIN), 1, 1, 1, 1, 1, 1)
+    local pv = d[I_VEND]
+    if pv and minimo and minimo < pv * 0.98 then
+        tt:AddDoubleLine(VERDE .. "¡Chollo! El vendedor paga " .. FIN .. Moneda(pv),
+            VERDE .. "ganas " .. FIN .. Moneda(pv - minimo) .. VERDE .. " por unidad" .. FIN, 1, 1, 1, 1, 1, 1)
+    end
     if d[I_CMP] and d[I_CMP] ~= d[I_MIN] then
         tt:AddDoubleLine("Precio habitual (24 h)", Moneda(d[I_CMP]), 1, 1, 1, 1, 1, 1)
     end
@@ -723,6 +762,202 @@ local function OroHaceDias(n)
 end
 
 ---------------------------------------------------------------------------
+-- Escaneos de la subasta (tuyos o de Auctionator) y chollos por debajo del vendedor
+---------------------------------------------------------------------------
+
+local function AnotarVivo(id, unidad, cant, ahora)
+    local e = vivo.items[id]
+    if not e or e.t ~= ahora then
+        e = { min = unidad, cant = 0, bajo = 0, coste = 0, valor = 0, t = ahora }
+        vivo.items[id] = e
+    end
+    if unidad < e.min then e.min = unidad end
+    e.cant = e.cant + cant
+    local pv = PagaVendedor(id)
+    if pv and unidad < pv * 0.98 then
+        e.bajo = e.bajo + cant
+        e.coste = e.coste + unidad * cant
+        e.valor = e.valor + pv * cant
+    end
+end
+
+local function ContarChollosVivos()
+    local n, ganancia = 0, 0
+    for _, e in pairs(vivo.items) do
+        if e.bajo > 0 and e.t >= vivo.t then
+            n = n + 1
+            ganancia = ganancia + (e.valor - e.coste)
+        end
+    end
+    return n, ganancia
+end
+
+local leyendoReplica, ultimaReplica = false, 0
+-- Escaneo completo (el botón de escaneo completo de Auctionator usa esta misma función del juego).
+local function LeerEscaneoCompleto()
+    local AH = C_AuctionHouse
+    if leyendoReplica or not (AH and AH.GetNumReplicateItems and AH.GetReplicateItemInfo) then return end
+    local total = AH.GetNumReplicateItems() or 0
+    if total == 0 or (time() - ultimaReplica) < 60 then return end
+    leyendoReplica = true
+    local ahora = time()
+    local i = 0
+    local function Trozo()
+        local fin = math.min(i + 4000, total)
+        for k = i, fin - 1 do
+            local _, _, cant, _, _, _, _, _, _, compra, _, _, _, _, _, _, id = AH.GetReplicateItemInfo(k)
+            if id and compra and compra > 0 and cant and cant > 0 then
+                AnotarVivo(id, compra / cant, cant, ahora)
+            end
+        end
+        i = fin
+        if i < total and C_Timer and C_Timer.After then
+            C_Timer.After(0, Trozo)
+            return
+        end
+        if i < total then return Trozo() end
+        vivo.t = ahora
+        ultimaReplica = ahora
+        leyendoReplica = false
+        local n, ganancia = ContarChollosVivos()
+        Imprimir(string.format("escaneo completo leído (%d subastas). Precios actualizados. Chollos por debajo del vendedor: %d (ganancia posible %s).",
+            total, n, Moneda(ganancia)))
+        if FS.RefrescarSiVisible then FS.RefrescarSiVisible() end
+    end
+    Trozo()
+end
+
+-- Búsquedas sueltas (las tuyas o las de Auctionator): actualizan el mínimo de ese objeto.
+local function LeerBusquedaBienes(id)
+    local AH = C_AuctionHouse
+    if not (id and AH and AH.GetNumCommoditySearchResults) then return end
+    local n = AH.GetNumCommoditySearchResults(id) or 0
+    if n == 0 then return end
+    local ahora = time()
+    vivo.items[id] = nil
+    for k = 1, n do
+        local r = AH.GetCommoditySearchResultInfo(id, k)
+        if r and r.unitPrice and r.quantity then AnotarVivo(id, r.unitPrice, r.quantity, ahora) end
+    end
+end
+
+local function LeerBusquedaObjetos(clave)
+    local AH = C_AuctionHouse
+    if not (clave and clave.itemID and AH and AH.GetNumItemSearchResults) then return end
+    local n = AH.GetNumItemSearchResults(clave) or 0
+    if n == 0 then return end
+    local ahora = time()
+    vivo.items[clave.itemID] = nil
+    for k = 1, n do
+        local r = AH.GetItemSearchResultInfo(clave, k)
+        if r and r.buyoutAmount and r.buyoutAmount > 0 then
+            local cant = r.quantity or 1
+            AnotarVivo(clave.itemID, r.buyoutAmount / cant, cant, ahora)
+        end
+    end
+end
+
+-- Lista de chollos: del último escaneo en vivo si es reciente; si no, de los datos horarios.
+local function ListaChollos()
+    local salida = {}
+    local hayVivo = vivo.t > 0 and (time() - vivo.t) < 3600 and vivo.t > (D.ultimaDescargaTs or 0)
+    if hayVivo then
+        for id, e in pairs(vivo.items) do
+            if e.bajo > 0 and e.t >= vivo.t then
+                local pv = PagaVendedor(id)
+                table.insert(salida, { id = id, uds = e.bajo, min = e.min, pv = pv, ganancia = e.valor - e.coste,
+                    porUd = pv and (pv - e.min) or 0 })
+            end
+        end
+    else
+        for id, d in pairs(D.i or {}) do
+            local pv, minimo = d[I_VEND], d[I_MIN]
+            if pv and minimo and minimo < pv * 0.98 then
+                table.insert(salida, { id = id, uds = nil, min = minimo, pv = pv, ganancia = pv - minimo, porUd = pv - minimo })
+            end
+        end
+    end
+    table.sort(salida, function(x, y) return x.ganancia > y.ganancia end)
+    -- Pedir al juego los nombres que aún no tiene (llegan al momento y se refresca la ventana).
+    for k = 1, math.min(#salida, 40) do
+        local id = salida[k].id
+        if C_Item and C_Item.RequestLoadItemDataByID and not (C_Item.GetItemNameByID and C_Item.GetItemNameByID(id)) then
+            pcall(C_Item.RequestLoadItemDataByID, id)
+        end
+    end
+    return salida, hayVivo
+end
+
+-- Lista de Auctionator con precio máximo = lo que paga el vendedor menos 1 cobre:
+-- al buscarla solo salen las subastas que dejan ganancia.
+local function ListaAuctionatorChollos(elementos, nombreLista)
+    local api = Auctionator and Auctionator.API and Auctionator.API.v1
+    if not (api and api.ConvertToSearchString and api.CreateShoppingList) then
+        Imprimir("no encuentro Auctionator para crear la lista.")
+        return
+    end
+    local cadenas, sinNombre = {}, 0
+    for _, x in ipairs(elementos) do
+        local nombre = C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(x.id) or (D.n and D.n[x.id])
+        if nombre and x.pv then
+            local ok, cadena = pcall(api.ConvertToSearchString, "ForeverSubastas",
+                { searchString = nombre, isExact = true, maxPrice = math.max(1, math.floor(x.pv * 0.98)) })
+            if ok and cadena then table.insert(cadenas, cadena) end
+        else
+            sinNombre = sinNombre + 1
+        end
+    end
+    if #cadenas == 0 then
+        Imprimir("aún no tengo los nombres de esos objetos; vuelve a pulsar en un par de segundos.")
+        return
+    end
+    if api.DeleteShoppingList then pcall(api.DeleteShoppingList, "ForeverSubastas", nombreLista) end
+    if pcall(api.CreateShoppingList, "ForeverSubastas", nombreLista, cadenas) then
+        Imprimir(string.format("lista \"%s\" creada en Auctionator con %d objetos. Búscala en su pestaña de compras: " ..
+            "solo saldrán las subastas por debajo de lo que paga el vendedor.%s", nombreLista, #cadenas,
+            sinNombre > 0 and string.format(" (%d sin nombre todavía; vuelve a crearla en un momento)", sinNombre) or ""))
+    end
+end
+FS.ListaAuctionatorChollos = ListaAuctionatorChollos
+
+-- Vender al vendedor lo que compraste por debajo de su precio (un clic en la ventana del vendedor).
+local function VenderChollos()
+    -- Solo con la ventana del vendedor abierta: si no, "usar" un objeto lo equiparía o lo consumiría.
+    if not (MerchantFrame and MerchantFrame:IsShown()) then return end
+    local cu = Cuentas()
+    local pendientes = cu.chollos or {}
+    if not next(pendientes) then
+        Imprimir("no tienes chollos pendientes de vender (se apuntan al comprarlos por debajo del vendedor).")
+        return
+    end
+    local C = C_Container
+    if not (C and C.GetContainerNumSlots and C.GetContainerItemInfo and C.UseContainerItem) then return end
+    local unidades, cobre = 0, 0
+    for bolsa = 0, 5 do
+        for hueco = 1, C.GetContainerNumSlots(bolsa) or 0 do
+            local info = C.GetContainerItemInfo(bolsa, hueco)
+            local id = info and info.itemID
+            if id and (pendientes[id] or 0) > 0 and not info.isLocked and not info.hasNoValue then
+                local cant = info.stackCount or 1
+                C.UseContainerItem(bolsa, hueco)
+                pendientes[id] = math.max(0, pendientes[id] - cant)
+                if pendientes[id] == 0 then pendientes[id] = nil end
+                unidades = unidades + cant
+                local pv = PagaVendedor(id) or 0
+                cobre = cobre + pv * cant
+                Anotar("venta", id, nil, cant, pv * cant)
+            end
+        end
+    end
+    if unidades > 0 then
+        Imprimir(string.format("vendidas %d unidades compradas como chollo por %s.", unidades, Moneda(cobre)))
+    else
+        Imprimir("no llevas encima los chollos pendientes (¿siguen en el buzón?).")
+    end
+end
+FS.VenderChollos = VenderChollos
+
+---------------------------------------------------------------------------
 -- Ventana: pestañas "Qué fabricar", "Qué vender" y "Mis cuentas"
 ---------------------------------------------------------------------------
 
@@ -746,6 +981,10 @@ local COLUMNAS = {
     subir = {
         { "Receta", 185, "LEFT" }, { "Color", 72, "LEFT" }, { "Coste", 75, "RIGHT" }, { "Recuperas", 80, "RIGHT" },
         { "Coste por punto", 95, "RIGHT" }, { "Ventas/día", 62, "RIGHT" }, { "Aprender", 95, "LEFT" },
+    },
+    chollos = {
+        { "Objeto", 200, "LEFT" }, { "Uds.", 50, "RIGHT" }, { "En subasta", 85, "RIGHT" }, { "Vendedor paga", 90, "RIGHT" },
+        { "Ganas/ud", 80, "RIGHT" }, { "Ganancia", 85, "RIGHT" }, { "Visto 7 d", 70, "RIGHT" },
     },
     cuentas = {
         { "Producto", 190, "LEFT" }, { "Vendido", 70, "RIGHT" }, { "Ingresos", 90, "RIGHT" }, { "Comprado", 65, "RIGHT" },
@@ -1268,6 +1507,10 @@ end
 local function AlPulsarFila(fila)
     local x = fila.dato
     if not x then return end
+    if estado.modo == "chollos" then
+        ListaAuctionatorChollos({ x }, "FS Chollo " .. NombreObjeto(x.id))
+        return
+    end
     if estado.modo == "fabricar" then
         PedirVecesYCrearLista(x.r)
     elseif estado.modo == "subir" then
@@ -1323,6 +1566,7 @@ local function Refrescar()
     end
     if modo == "cuentas" then ventana.botonPeriodo:Show() else ventana.botonPeriodo:Hide() end
     if modo == "subir" then ventana.botonSubirProf:Show() else ventana.botonSubirProf:Hide() end
+    if modo == "chollos" then ventana.botonListaChollos:Show() else ventana.botonListaChollos:Hide() end
 
     local info, pie = "", ""
     if modo == "fabricar" then
@@ -1355,6 +1599,19 @@ local function Refrescar()
                 ocultas > 0 and (GRIS .. string.format(" · %d ocultas por nivel", ocultas) .. FIN) or "")
         end
         pie = "Clic: lista de la compra con la cantidad sugerida. Visita a tu instructor una vez para saber nivel y coste de lo que enseña."
+    elseif modo == "chollos" then
+        local hayVivo
+        lista, hayVivo = ListaChollos()
+        local total = 0
+        for _, x in ipairs(lista) do total = total + (x.ganancia or 0) end
+        if hayVivo then
+            info = string.format("Tu escaneo de las %s: %d objetos por debajo del vendedor, ganancia posible %s.",
+                date and date("%H:%M", vivo.t) or "?", #lista, Moneda(total))
+        else
+            info = string.format("Datos de las %s: %d objetos por debajo del vendedor. " ..
+                "Haz un escaneo completo en Auctionator para verlos al momento y con cantidades.", D.ultimaDescarga or "?", #lista)
+        end
+        pie = "Compra con la lista de Auctionator y luego en cualquier vendedor pulsa "Vender chollos". Clic en una fila: lista solo de ese objeto."
     elseif modo == "vender" then
         local total
         lista, total = ListaVender()
@@ -1407,6 +1664,17 @@ local function Refrescar()
             local corto = x.aprendida and "" or (InfoAprender(r, x.dato))
             c[7]:SetText(x.aprendida and "" or (NARANJA .. corto .. FIN))
             fila:Show()
+        elseif modo == "chollos" then
+            local d = D.i and D.i[x.id]
+            c[1]:SetText(BLANCO .. NombreObjeto(x.id) .. FIN)
+            c[2]:SetText(x.uds and tostring(x.uds) or (GRIS .. "?" .. FIN))
+            c[3]:SetText(MonedaCorta(x.min))
+            c[4]:SetText(MonedaCorta(x.pv))
+            c[5]:SetText(VERDE .. FIN .. MonedaCorta(x.porUd))
+            c[6]:SetText(x.uds and MonedaCorta(x.ganancia) or (GRIS .. "-" .. FIN))
+            local pct = d and d[I_CHOLLO]
+            c[7]:SetText(pct and (pct .. "% h") or (GRIS .. "-" .. FIN))
+            fila:Show()
         elseif modo == "vender" then
             local d = D.i and D.i[x.id]
             local colores = { ya = VERDE, hora = AMARILLO, espera = NARANJA, vendedor = BLANCO, nosevende = ROJO }
@@ -1435,6 +1703,10 @@ local function Refrescar()
         desde, math.min(estado.offset + VISIBLES, #lista), #lista, pie))
 end
 FS.Refrescar = Refrescar
+
+function FS.RefrescarSiVisible()
+    if ventana and ventana:IsShown() then Refrescar() end
+end
 
 function FS.RefrescarSiCuentas()
     if ventana and ventana:IsShown() and estado.modo == "cuentas" then Refrescar() end
@@ -1492,8 +1764,8 @@ local function CrearVentana()
     f.pestanas = {}
     local anterior
     for _, p in ipairs({ { "fabricar", "Qué fabricar" }, { "subir", "Subir profesión" }, { "vender", "Qué vender" },
-        { "cuentas", "Mis cuentas" } }) do
-        local b = CrearBoton(f, 120, function() CambiarModo(p[1]) end)
+        { "chollos", "Chollos" }, { "cuentas", "Mis cuentas" } }) do
+        local b = CrearBoton(f, 116, function() CambiarModo(p[1]) end)
         b:SetText(p[2])
         if anterior then b:SetPoint("LEFT", anterior, "RIGHT", 4, 0) else b:SetPoint("TOPLEFT", 14, -28) end
         f.pestanas[p[1]] = b
@@ -1554,6 +1826,14 @@ local function CrearVentana()
         Refrescar()
     end)
     f.botonSubirProf:SetPoint("TOPLEFT", 14, -74)
+
+    -- Botón de "Chollos"
+    f.botonListaChollos = CrearBoton(f, 260, function()
+        local l = ListaChollos()
+        ListaAuctionatorChollos(l, "FS Chollos vendedor")
+    end)
+    f.botonListaChollos:SetText("Crear lista de compra en Auctionator")
+    f.botonListaChollos:SetPoint("TOPLEFT", 14, -74)
 
     f.cabeceras = {}
     for i = 1, NUM_COLUMNAS do
@@ -1652,6 +1932,10 @@ local function CrearBotonesExternos()
     end
     if AuctionHouseFrame then
         BotonEn(AuctionHouseFrame, "Qué vender", function() FS.Mostrar(nil, "vender") end)
+        BotonEn(AuctionHouseFrame, "Chollos", function() FS.Mostrar(nil, "chollos") end, "ForeverSubastasBotonChollos", 124)
+    end
+    if MerchantFrame then
+        BotonEn(MerchantFrame, "Vender chollos", VenderChollos, "ForeverSubastasBotonVendedor", 0)
     end
 end
 
@@ -1663,7 +1947,8 @@ local eventos = CreateFrame("Frame")
 for _, ev in ipairs({ "PLAYER_LOGIN", "PLAYER_LOGOUT", "PLAYER_MONEY", "SKILL_LINES_CHANGED", "TRADE_SKILL_SHOW",
     "TRADE_SKILL_LIST_UPDATE", "ADDON_LOADED", "MAIL_INBOX_UPDATE", "AUCTION_HOUSE_SHOW", "BAG_UPDATE_DELAYED",
     "COMMODITY_PRICE_UPDATED", "COMMODITY_PURCHASE_SUCCEEDED", "COMMODITY_PURCHASE_FAILED", "TRAINER_SHOW",
-    "TRAINER_UPDATE" }) do
+    "TRAINER_UPDATE", "REPLICATE_ITEM_LIST_UPDATE", "COMMODITY_SEARCH_RESULTS_UPDATED", "ITEM_SEARCH_RESULTS_UPDATED",
+    "MERCHANT_SHOW", "GET_ITEM_INFO_RECEIVED" }) do
     local ok = pcall(eventos.RegisterEvent, eventos, ev)
     if ok and ev == "COMMODITY_PURCHASE_SUCCEEDED" then eventoCompraOk = true end
 end
@@ -1697,6 +1982,19 @@ eventos:SetScript("OnEvent", function(_, evento, arg1, arg2)
         if ok and n and n > 0 and evento == "TRAINER_SHOW" then
             Imprimir("apuntado lo que enseña este instructor (" .. n .. " entradas) para la pestaña Subir profesión.")
         end
+    elseif evento == "REPLICATE_ITEM_LIST_UPDATE" then
+        pcall(LeerEscaneoCompleto)
+    elseif evento == "COMMODITY_SEARCH_RESULTS_UPDATED" then
+        pcall(LeerBusquedaBienes, arg1)
+    elseif evento == "ITEM_SEARCH_RESULTS_UPDATED" then
+        pcall(LeerBusquedaObjetos, arg1)
+    elseif evento == "MERCHANT_SHOW" then
+        pcall(CrearBotonesExternos)
+    elseif evento == "GET_ITEM_INFO_RECEIVED" then
+        if ventana and ventana:IsShown() and estado.modo == "chollos" and not FS.refrescoPendiente and C_Timer then
+            FS.refrescoPendiente = true
+            C_Timer.After(0.5, function() FS.refrescoPendiente = false; pcall(Refrescar) end)
+        end
     elseif evento == "MAIL_INBOX_UPDATE" then
         pcall(LeerFacturas)
     elseif evento == "AUCTION_HOUSE_SHOW" then
@@ -1726,13 +2024,15 @@ SlashCmdList = SlashCmdList or {}
 SlashCmdList["FOREVERSUBASTAS"] = function(texto)
     texto = (texto or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
     if texto == "ayuda" or texto == "help" then
-        Imprimir("/subastas abre la ventana (qué fabricar, qué vender y tus cuentas). /subastas subir, /subastas vender y /subastas cuentas van directos a esas pestañas. Pasa el ratón por cualquier objeto para ver precios, tendencia, mejores horas y a cuánto venderlo. Abre tus profesiones una vez para que sepa qué recetas conoces.")
+        Imprimir("/subastas abre la ventana (qué fabricar, qué vender y tus cuentas). /subastas subir, /subastas vender, /subastas chollos y /subastas cuentas van directos a esas pestañas. Pasa el ratón por cualquier objeto para ver precios, tendencia, mejores horas y a cuánto venderlo. Abre tus profesiones una vez para que sepa qué recetas conoces.")
     elseif texto == "vender" then
         FS.Mostrar(nil, "vender")
     elseif texto == "subir" then
         FS.Mostrar(nil, "subir")
     elseif texto == "cuentas" then
         FS.Mostrar(nil, "cuentas")
+    elseif texto == "chollos" then
+        FS.Mostrar(nil, "chollos")
     elseif texto == "todas" then
         FS.Mostrar("todas", "fabricar")
     else
