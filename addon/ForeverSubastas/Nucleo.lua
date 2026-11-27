@@ -1910,14 +1910,19 @@ end
 -- Botones en la ventana de profesiones y en la subasta
 ---------------------------------------------------------------------------
 
-local function BotonEn(marco, texto, alClic, clave, desplazamiento)
+local function BotonEn(marco, texto, alClic, clave, desplazamiento, debajo)
     clave = clave or "ForeverSubastasBoton"
     if not marco or marco[clave] then return end
     local ok, b = pcall(CreateFrame, "Button", nil, marco, "UIPanelButtonTemplate")
     if not ok or not b then return end
     b:SetSize(120, 22)
     b:SetText(texto)
-    b:SetPoint("TOPRIGHT", marco, "TOPRIGHT", -30 - (desplazamiento or 0), -26)
+    if debajo then
+        -- Debajo del marco, a la derecha de sus pestañas (para no tapar los botones de Auctionator).
+        b:SetPoint("TOPRIGHT", marco, "BOTTOMRIGHT", -(desplazamiento or 0), -2)
+    else
+        b:SetPoint("TOPRIGHT", marco, "TOPRIGHT", -30 - (desplazamiento or 0), -26)
+    end
     b:SetFrameStrata("HIGH")
     b:SetScript("OnClick", alClic)
     marco[clave] = b
@@ -1937,8 +1942,8 @@ local function CrearBotonesExternos()
         BotonEn(marcoProf, "Subir profesión", AbrirSubir, "ForeverSubastasBotonSubir", 124)
     end
     if AuctionHouseFrame then
-        BotonEn(AuctionHouseFrame, "Qué vender", function() FS.Mostrar(nil, "vender") end)
-        BotonEn(AuctionHouseFrame, "Chollos", function() FS.Mostrar(nil, "chollos") end, "ForeverSubastasBotonChollos", 124)
+        BotonEn(AuctionHouseFrame, "Qué vender", function() FS.Mostrar(nil, "vender") end, nil, 0, true)
+        BotonEn(AuctionHouseFrame, "Chollos", function() FS.Mostrar(nil, "chollos") end, "ForeverSubastasBotonChollos", 124, true)
     end
     if MerchantFrame then
         BotonEn(MerchantFrame, "Vender chollos", VenderChollos, "ForeverSubastasBotonVendedor", 0)
