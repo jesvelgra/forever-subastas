@@ -103,6 +103,15 @@ local function HorasDesde(ts)
     return (time() - ts) / 3600
 end
 
+-- "1d 20h", "5h 12m", "12m"
+local function TiempoCorto(seg)
+    seg = math.max(0, math.floor(seg or 0))
+    local d, h, m = math.floor(seg / 86400), math.floor(seg % 86400 / 3600), math.floor(seg % 3600 / 60)
+    if d > 0 then return string.format("%dd %dh", d, h) end
+    if h > 0 then return string.format("%dh %dm", h, m) end
+    return string.format("%dm", math.max(m, 1))
+end
+
 local function NombreObjeto(id)
     if not id then return "?" end
     local nombre
@@ -267,6 +276,52 @@ local function Dificultad(info)
     return nil
 end
 
+---------------------------------------------------------------------------
+-- Enfriamientos de fabricación (Tela lunar, transmutaciones...)
+---------------------------------------------------------------------------
+
+-- Horas de enfriamiento en Forever, por objeto fabricado. Sirven para saber que la receta tiene
+-- enfriamiento aunque esté lista y para calcular cuándo vuelve si fabricas con la ventana cerrada.
+-- Lo que diga el juego al abrir la profesión manda sobre esta tabla.
+local CD_HORAS = {
+    [14342] = 95,                                   -- Tela lunar
+    [12360] = 47, [251290] = 47,                    -- Transmutar: arcanita, legionita
+    [7078] = 23, [7080] = 23, [7082] = 23, [7076] = 23, [12803] = 23, [12808] = 23,  -- esencias
+    [3577] = 1, [6037] = 1,                         -- Transmutar: hierro a oro, mitril a veraplata
+}
+local CD_AVISO_HORAS = 20   -- solo se avisa de los enfriamientos largos (los de 1 h serían ruido)
+
+local function Enfriamientos(pj)
+    pj.cd = pj.cd or {}
+    return pj.cd
+end
+
+local function RegistrarEnfriamiento(pj, T, rid, item, nombre, prof)
+    if not (T.GetRecipeCooldown and item) then return end
+    local ok, resto = pcall(T.GetRecipeCooldown, rid)
+    if not ok then return end
+    resto = type(resto) == "number" and resto or 0
+    local cds = Enfriamientos(pj)
+    local e = cds[item]
+    if resto <= 0 and not e and not CD_HORAS[item] then return end
+    local ahora = time and time() or 0
+    e = e or {}
+    e.nombre, e.prof, e.rid = nombre or e.nombre, prof or e.prof, rid
+    e.h = e.h or CD_HORAS[item]
+    -- Recién fabricado: lo que queda es casi la duración completa (así aprende enfriamientos que no están en la tabla).
+    if resto > 0 and e.hecho and ahora - e.hecho < 600 then
+        e.h = math.floor((resto + (ahora - e.hecho)) / 3600 + 0.5)
+    end
+    if resto > 0 then
+        e.fin = ahora + resto
+    elseif not e.fin or e.fin > ahora then
+        e.fin = ahora
+    end
+    -- Si está lista y tienes la ventana abierta, ya lo estás viendo: no hace falta avisar en el chat.
+    if resto <= 0 then e.avisado = e.fin end
+    cds[item] = e
+end
+
 local function LeerRecetasConocidas()
     local T = C_TradeSkillUI
     if not (T and T.GetAllRecipeIDs and T.GetRecipeInfo) then return end
@@ -291,6 +346,7 @@ local function LeerRecetasConocidas()
             if info.learned then
                 if item then pj.conocidas[item] = true end
                 if info.name then pj.nombres[info.name] = true end
+                RegistrarEnfriamiento(pj, T, rid, item, info.name, prof)
             end
             local dif = Dificultad(info)
             if dif then
@@ -364,6 +420,104 @@ local function Conocida(pj, r)
     -- Por nombre solo si el juego no nos dio los objetos fabricados (hay recetas distintas con el mismo nombre).
     if not next(pj.conocidas) then return pj.nombres[r[R_NOMBRE]] or false end
     return false
+end
+
+-- Enfriamiento de una receta conocida: texto ("lista" o el tiempo que falta) y la entrada guardada.
+local function EnfriamientoReceta(pj, r)
+    local e = pj.cd and pj.cd[r[R_ITEM]]
+    if not e or (e.prof and e.prof ~= r[R_PROF]) then return nil end
+    local resto = (e.fin or 0) - (time and time() or 0)
+    if resto <= 0 then return VERDE .. "lista" .. FIN, e end
+    return NARANJA .. TiempoCorto(resto) .. FIN, e
+end
+
+local function NombreCorto(nombre)
+    return ((nombre or "?"):gsub("^Transmutar: ", ""))
+end
+
+-- Resumen de los enfriamientos largos de este personaje: "arcanita lista, Tela lunar 3d 2h".
+local function ResumenEnfriamientos(pj)
+    local ahora = time and time() or 0
+    local orden = {}
+    for item, e in pairs(pj.cd or {}) do
+        if (e.h or 0) >= CD_AVISO_HORAS then table.insert(orden, { item = item, e = e }) end
+    end
+    if #orden == 0 then return nil end
+    table.sort(orden, function(a, b) return (a.e.fin or 0) < (b.e.fin or 0) end)
+    local partes = {}
+    for _, x in ipairs(orden) do
+        local resto = (x.e.fin or 0) - ahora
+        table.insert(partes, NombreCorto(x.e.nombre or NombreObjeto(x.item)) .. " " ..
+            (resto <= 0 and (VERDE .. "lista" .. FIN) or (NARANJA .. TiempoCorto(resto) .. FIN)))
+    end
+    return table.concat(partes, ", ")
+end
+
+local function NombrePj(clave)
+    return (clave:match("^(.-)%-[^-]*$") or clave)
+end
+
+-- Una línea en el chat cuando un enfriamiento largo queda listo (una vez por cada vez que se gasta).
+local function AvisarEnfriamientos()
+    local _, db = Personaje()
+    if db.sinAvisosCd then return end
+    local ahora = time and time() or 0
+    local listos = {}
+    local mio = ClavePersonaje()
+    for clave, pj in pairs(db.pj or {}) do
+        for item, e in pairs(pj.cd or {}) do
+            if (e.h or 0) >= CD_AVISO_HORAS and e.fin and e.fin <= ahora and e.avisado ~= e.fin then
+                e.avisado = e.fin
+                table.insert(listos, (e.nombre or NombreObjeto(item)) ..
+                    (clave ~= mio and (GRIS .. " (" .. NombrePj(clave) .. ")" .. FIN) or ""))
+            end
+        end
+    end
+    if #listos > 0 then
+        Imprimir("ya puedes fabricar " .. VERDE .. table.concat(listos, ", ") .. FIN ..
+            GRIS .. " (/fsub cd para verlos · /fsub avisos para quitar este aviso)" .. FIN)
+    end
+    return #listos
+end
+FS.AvisarEnfriamientos = AvisarEnfriamientos
+
+-- Al fabricar con la ventana cerrada (macro), el juego no avisa: se calcula con la duración conocida.
+local function AlLanzarHechizo(unidad, hechizo)
+    if unidad ~= "player" or not hechizo then return end
+    local pj = Personaje()
+    local ahora = time and time() or 0
+    for _, e in pairs(pj.cd or {}) do
+        if e.rid == hechizo then
+            e.hecho = ahora
+            if e.h then e.fin = ahora + e.h * 3600 end
+            if FS.RefrescarSiVisible then FS.RefrescarSiVisible() end
+        end
+    end
+end
+
+local function ListarEnfriamientos()
+    local _, db = Personaje()
+    local hay = false
+    for clave, pj in pairs(db.pj or {}) do
+        local ahora = time and time() or 0
+        local partes = {}
+        for item, e in pairs(pj.cd or {}) do
+            local resto = (e.fin or 0) - ahora
+            table.insert(partes, { t = e.fin or 0, txt = (e.nombre or NombreObjeto(item)) .. ": " ..
+                (resto <= 0 and (VERDE .. "lista" .. FIN) or (NARANJA .. TiempoCorto(resto) .. FIN)) ..
+                (e.h and (GRIS .. " (cada " .. e.h .. " h)" .. FIN) or "") })
+        end
+        if #partes > 0 then
+            hay = true
+            table.sort(partes, function(a, b) return a.t < b.t end)
+            local textos = {}
+            for _, x in ipairs(partes) do table.insert(textos, x.txt) end
+            Imprimir(AMARILLO .. NombrePj(clave) .. FIN .. " · " .. table.concat(textos, " · "))
+        end
+    end
+    if not hay then
+        Imprimir("aún no tengo enfriamientos apuntados: abre una vez la ventana de Alquimia o Sastrería con cada personaje.")
+    end
 end
 
 local porItem, porReactivo
@@ -454,6 +608,10 @@ local function AnadirFabricacion(tt, id)
             tt:AddDoubleLine("Si lo fabricas (" .. prof .. ")" .. quien, benef, 1, 0.82, 0, 1, 1, 1)
             tt:AddDoubleLine(GRIS .. "   materiales " .. FIN .. Moneda(r[R_COSTE]),
                 GRIS .. "venta neta " .. FIN .. Moneda(r[R_VENTA]), 1, 1, 1, 1, 1, 1)
+            local textoCd = Conocida(pj, r) and EnfriamientoReceta(pj, r)
+            if textoCd then
+                tt:AddDoubleLine(GRIS .. "   tu enfriamiento" .. FIN, textoCd, 1, 1, 1, 1, 1, 1)
+            end
         end
     end
     local usos = pr[id]
@@ -1449,6 +1607,19 @@ local function TooltipReceta(fila, r, conocida)
     if r[R_DONDE] == "real" then textoVenta = textoVenta .. VERDE .. " · ventas reales" .. FIN end
     GameTooltip:AddDoubleLine(textoVenta, Moneda(r[R_VENTA]), 1, 1, 1, 1, 1, 1)
     GameTooltip:AddDoubleLine("Beneficio por fabricación", Moneda(r[R_BENEF]), 1, 1, 1, 1, 1, 1)
+    local textoCd, e = nil, nil
+    if conocida then textoCd, e = EnfriamientoReceta(pjr, r) end
+    local horas = (e and e.h) or CD_HORAS[r[R_ITEM]]
+    if horas and horas >= 2 then
+        GameTooltip:AddDoubleLine("Enfriamiento: cada " .. horas .. " h",
+            textoCd and ("tu enfriamiento: " .. textoCd) or "", 1, 1, 1, 1, 1, 1)
+        if (r[R_BENEF] or 0) > 0 then
+            GameTooltip:AddDoubleLine("Beneficio por día de enfriamiento", Moneda(math.floor(r[R_BENEF] * 24 / horas)),
+                1, 1, 1, 1, 1, 1)
+        end
+    elseif textoCd then
+        GameTooltip:AddDoubleLine("Tu enfriamiento", textoCd, 1, 1, 1, 1, 1, 1)
+    end
     if r[R_FALTA] then
         GameTooltip:AddLine(ROJO .. "Ojo: hay materiales sin precio en la subasta; el coste real será mayor." .. FIN, 1, 1, 1, true)
     end
@@ -1575,6 +1746,7 @@ local function Refrescar()
     if modo == "chollos" then ventana.botonListaChollos:Show() else ventana.botonListaChollos:Hide() end
 
     local info, pie = "", ""
+    local pjFab = Personaje()
     if modo == "fabricar" then
         lista = ListaFabricar()
         ventana.botonProf:SetText("Profesión: " .. TextoProfesion(estado.prof))
@@ -1587,6 +1759,8 @@ local function Refrescar()
             aviso = ROJO .. string.format("  ¡Datos de hace %.0f h! Revisa la actualización del PC.", edad) .. FIN
         end
         info = string.format("Datos de la subasta: %s · historial: %.1f días%s", D.ultimaDescarga or "?", D.dias or 0, aviso)
+        local cds = ResumenEnfriamientos(pjFab)
+        if cds then info = info .. " · Enfriamientos: " .. cds end
         pie = "Clic en una receta: lista de la compra · " .. ResumenMercado()
     elseif modo == "subir" then
         local prof, colores
@@ -1648,6 +1822,8 @@ local function Refrescar()
             local r = x.r
             local nombre = (x.conocida and BLANCO or GRIS) .. r[R_NOMBRE] .. FIN
             if r[R_FALTA] then nombre = nombre .. ROJO .. " *" .. FIN end
+            local textoCd = x.conocida and EnfriamientoReceta(pjFab, r)
+            if textoCd then nombre = nombre .. GRIS .. " · " .. FIN .. textoCd end
             local di = D.i and D.i[r[R_ITEM]]
             c[1]:SetText(nombre)
             c[2]:SetText(GRIS .. (D.p[r[R_PROF]] or "") .. FIN)
@@ -1993,8 +2169,15 @@ for _, ev in ipairs({ "PLAYER_LOGIN", "PLAYER_LOGOUT", "PLAYER_MONEY", "SKILL_LI
     local ok = pcall(eventos.RegisterEvent, eventos, ev)
     if ok and ev == "COMMODITY_PURCHASE_SUCCEEDED" then eventoCompraOk = true end
 end
-eventos:SetScript("OnEvent", function(_, evento, arg1, arg2)
-    if evento == "PLAYER_LOGIN" then
+if eventos.RegisterUnitEvent then
+    pcall(eventos.RegisterUnitEvent, eventos, "UNIT_SPELLCAST_SUCCEEDED", "player")
+else
+    pcall(eventos.RegisterEvent, eventos, "UNIT_SPELLCAST_SUCCEEDED")
+end
+eventos:SetScript("OnEvent", function(_, evento, arg1, arg2, arg3)
+    if evento == "UNIT_SPELLCAST_SUCCEEDED" then
+        pcall(AlLanzarHechizo, arg1, arg3)
+    elseif evento == "PLAYER_LOGIN" then
         D = ForeverSubastasDatos
         pcall(ActualizarProfesiones)
         pcall(EngancharTooltips)
@@ -2010,6 +2193,11 @@ eventos:SetScript("OnEvent", function(_, evento, arg1, arg2)
             Imprimir(texto)
         else
             Imprimir("no encuentro Datos.lua.")
+        end
+        pcall(AvisarEnfriamientos)
+        -- Y mientras juegas, se mira cada 5 minutos si alguno ha quedado listo.
+        if C_Timer and C_Timer.NewTicker then
+            C_Timer.NewTicker(300, function() pcall(AvisarEnfriamientos) end)
         end
     elseif evento == "PLAYER_MONEY" or evento == "PLAYER_LOGOUT" then
         pcall(GuardarOro)
@@ -2071,7 +2259,7 @@ SlashCmdList = SlashCmdList or {}
 SlashCmdList["FOREVERSUBASTAS"] = function(texto)
     texto = (texto or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
     if texto == "ayuda" or texto == "help" then
-        Imprimir("/subastas abre la ventana (qué fabricar, qué vender y tus cuentas). /subastas subir, /subastas vender, /subastas chollos y /subastas cuentas van directos a esas pestañas. Pasa el ratón por cualquier objeto para ver precios, tendencia, mejores horas y a cuánto venderlo. Abre tus profesiones una vez para que sepa qué recetas conoces.")
+        Imprimir("/subastas abre la ventana (qué fabricar, qué vender y tus cuentas). /subastas subir, /subastas vender, /subastas chollos y /subastas cuentas van directos a esas pestañas. /subastas cd muestra tus enfriamientos (Tela lunar, transmutaciones) y /subastas avisos activa o quita el aviso en el chat cuando quedan listos. Pasa el ratón por cualquier objeto para ver precios, tendencia, mejores horas y a cuánto venderlo. Abre tus profesiones una vez para que sepa qué recetas conoces.")
     elseif texto == "vender" then
         FS.Mostrar(nil, "vender")
     elseif texto == "subir" then
@@ -2082,6 +2270,13 @@ SlashCmdList["FOREVERSUBASTAS"] = function(texto)
         FS.Mostrar(nil, "chollos")
     elseif texto == "todas" then
         FS.Mostrar("todas", "fabricar")
+    elseif texto == "cd" or texto == "enfriamientos" then
+        ListarEnfriamientos()
+    elseif texto == "avisos" then
+        local _, db = Personaje()
+        db.sinAvisosCd = not db.sinAvisosCd or nil
+        Imprimir(db.sinAvisosCd and "avisos de enfriamientos desactivados (/fsub avisos para volver a activarlos)."
+            or "avisos de enfriamientos activados: te avisaré en el chat cuando la Tela lunar o una transmutación estén listas.")
     else
         FS.Mostrar()
     end

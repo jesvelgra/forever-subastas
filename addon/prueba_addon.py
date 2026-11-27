@@ -65,13 +65,16 @@ TOOLTIP_CB = nil
 TooltipDataProcessor = { AddTooltipPostCall = function(tipo, fn) TOOLTIP_CB = fn end }
 Enum = { TooltipDataType = { Item = 0 } }
 C_TradeSkillUI = {
-  GetAllRecipeIDs = function() return { 2330, 2331, 2332 } end,
+  GetAllRecipeIDs = function() return { 2330, 2331, 2332, 17187, 3330 } end,
+  GetRecipeCooldown = function(id) if id == 17187 then return CD_ARCANITA end end,
   GetRecipeInfo = function(id)
+    if id == 17187 then return { learned = true, name = "Transmutar: arcanita", relativeDifficulty = 3 } end
+    if id == 3330 then return { learned = true, name = "Transmutar: hierro a oro", relativeDifficulty = 3 } end
     if id == 2330 then return { learned = true, name = "Poción de curación menor", relativeDifficulty = 3 } end
     if id == 2331 then return { learned = true, name = "Elixir de fuerza menor", relativeDifficulty = 1, maxTrivialLevel = 200 } end
     return { learned = false, name = "Poción menor de maná", relativeDifficulty = 0 }
   end,
-  GetRecipeOutputItemData = function(id) return { itemID = ({ [2330] = 118, [2331] = 2454, [2332] = 2455 })[id] } end,
+  GetRecipeOutputItemData = function(id) return { itemID = ({ [2330] = 118, [2331] = 2454, [2332] = 2455, [17187] = 12360, [3330] = 3577 })[id] } end,
   GetBaseProfessionInfo = function() return { professionID = 171, skillLevel = 180, maxSkillLevel = 225 } end,
   GetRecipeRequirements = function(id) if id == 2331 then return { { name = "Rueca", met = false } } end return {} end,
   GetRecipeSourceText = function(id) return "|cFFFFD200Instructor|r|nRequiere Alquimia (150)" end,
@@ -133,7 +136,8 @@ UiMapPoint = { CreateFromCoordinates = function() return {} end }
 SHIFT = false
 IsShiftKeyDown = function() return SHIFT end
 -- Escaneo completo y vendedor
-C_Timer = { After = function(_, f) f() end }
+C_Timer = { After = function(_, f) f() end, NewTicker = function(s, f) TICKER = f end }
+CD_ARCANITA = 20 * 3600 + 120
 C_AuctionHouse.GetNumReplicateItems = function() return 2 end
 C_AuctionHouse.GetReplicateItemInfo = function(k)
   if k == 0 then return "Flor de paz", 0, 20, 1, true, 1, 0, 0, 0, 100, 0, false, nil, "x", "x", 0, 2447, true end
@@ -280,6 +284,50 @@ ev._scripts.OnEvent(ev, "AUCTION_HOUSE_SHOW")
 Y_BOTON_AUCTIONATOR = AuctionHouseFrame.ForeverSubastasBoton._punto[5]
 ANCLA_CHOLLOS = AuctionHouseFrame.ForeverSubastasBotonChollos._punto[1] .. "/" .. AuctionHouseFrame.ForeverSubastasBotonChollos._punto[3]
 
+-- Enfriamientos: la arcanita está en enfriamiento (20 h) y se ve en Qué fabricar, en la línea de arriba y con /fsub cd
+local pjc = ForeverSubastas.Personaje()
+CD_FIN_OK = pjc.cd[12360] and (pjc.cd[12360].fin - time()) > 20 * 3600 and pjc.cd[12360].h == 47
+CD_ORO = pjc.cd[3577] and pjc.cd[3577].h
+v.pestanas.fabricar._scripts.OnClick(v.pestanas.fabricar)
+INFO_FABRICAR = v.info._texto
+FILA_ARCANITA = nil
+for i = 1, 400 do
+  ForeverSubastas.Refrescar()
+  for _, f in ipairs(v.filas) do
+    local t = f.c[1]._texto or ""
+    if t:find("Transmutar: arcanita", 1, true) then FILA_ARCANITA = t end
+  end
+  if FILA_ARCANITA then break end
+end
+GameTooltip.SetOwner = function() end
+for _, f in ipairs(v.filas) do
+  if (f.c[1]._texto or ""):find("Transmutar: arcanita", 1, true) then
+    local antes = #LINEAS
+    f._scripts.OnEnter(f)
+    for k = antes + 1, #LINEAS do
+      if LINEAS[k]:find("por día de enfriamiento", 1, true) then TOOLTIP_CD = LINEAS[k] end
+      if LINEAS[k]:find("Enfriamiento: cada", 1, true) then TOOLTIP_CD2 = LINEAS[k] end
+    end
+  end
+end
+CHAT_ANTES = #CHAT
+SlashCmdList["FOREVERSUBASTAS"]("cd")
+CD_LISTA = CHAT[#CHAT]
+-- Queda lista: un único aviso en el chat (y ninguno por la de 1 h)
+pjc.cd[12360].fin = time() - 10
+AVISOS_1 = ForeverSubastas.AvisarEnfriamientos()
+AVISOS_2 = ForeverSubastas.AvisarEnfriamientos()
+AVISO_TEXTO = CHAT[#CHAT]
+-- Transmuta con la ventana cerrada: vuelve a 47 h
+ev._scripts.OnEvent(ev, "UNIT_SPELLCAST_SUCCEEDED", "player", "guid", 17187)
+CD_TRAS_LANZAR = math.floor((pjc.cd[12360].fin - time()) / 3600 + 0.5)
+-- Al abrir la ventana, el juego manda
+CD_ARCANITA = 46 * 3600 + 3500
+ev._scripts.OnEvent(ev, "TRADE_SKILL_LIST_UPDATE")
+CD_TRAS_LEER = pjc.cd[12360].h
+-- Tooltip de la receta en la ventana: enfriamiento y beneficio por día
+LINEAS_CD = #LINEAS
+
 local pj = ForeverSubastas.Personaje()
 CONOCE_118 = pj.conocidas[118] and true or false
 PROF_171 = pj.profs[171]
@@ -318,6 +366,19 @@ def main() -> int:
     assert g.Y_BOTON_SOLO == -2, "sin pestañas en su zona, los botones van al lado de las pestañas"
     assert g.Y_BOTON_AUCTIONATOR == -34, "con pestañas en su zona, los botones bajan debajo de ellas"
     assert g.ANCLA_CHOLLOS == "RIGHT/LEFT", "Chollos va a la izquierda de Qué vender"
+    print("Enfriamientos:", g.FILA_ARCANITA, "·", g.INFO_FABRICAR)
+    print("   /fsub cd:", g.CD_LISTA)
+    print("   aviso:", g.AVISOS_1, g.AVISOS_2, g.AVISO_TEXTO, "· tras lanzar:", g.CD_TRAS_LANZAR, "h · tras leer:", g.CD_TRAS_LEER)
+    print("   tooltip:", g.TOOLTIP_CD2, "·", g.TOOLTIP_CD)
+    assert g.TOOLTIP_CD and g.TOOLTIP_CD2, "el tooltip de la receta no muestra el enfriamiento ni el beneficio por día"
+    assert g.CD_FIN_OK, "no guardó el enfriamiento de la arcanita"
+    assert g.CD_ORO == 1, "debería apuntar la transmutación de hierro a oro (enfriamiento conocido)"
+    assert g.FILA_ARCANITA and "20h" in g.FILA_ARCANITA, "Qué fabricar no muestra el enfriamiento"
+    assert "Enfriamientos: arcanita" in g.INFO_FABRICAR, "falta el resumen de enfriamientos"
+    assert "Transmutar: arcanita" in g.CD_LISTA and "cada 47 h" in g.CD_LISTA, "/fsub cd no lista el enfriamiento"
+    assert g.AVISOS_1 == 1 and g.AVISOS_2 == 0, "el aviso debe salir una sola vez (y no para la de 1 h)"
+    assert g.CD_TRAS_LANZAR == 47, "al transmutar debería volver a 47 h"
+    assert g.CD_TRAS_LEER == 47, "al leer la ventana justo después debería confirmar 47 h"
     assert g.CONOCE_118 is True, "no registró la receta conocida"
     assert g.PROF_171 == 180, "no registró la profesión"
     assert any("Subasta Alianza JcJ" in l for l in lineas), "el tooltip no añade datos"
