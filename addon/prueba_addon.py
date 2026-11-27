@@ -37,6 +37,8 @@ CreateFrame = function(tipo, nombre, padre, plantilla)
   return f
 end
 UIParent = mock("UIParent")
+Minimap = mock("Minimap")
+Minimap.GetWidth = function() return 140 end
 UISpecialFrames = {}
 SlashCmdList = {}
 LINEAS = {}
@@ -327,6 +329,21 @@ ev._scripts.OnEvent(ev, "TRADE_SKILL_LIST_UPDATE")
 CD_TRAS_LEER = pjc.cd[12360].h
 -- Tooltip de la receta en la ventana: enfriamiento y beneficio por día
 LINEAS_CD = #LINEAS
+-- Botón del minimapa: tooltip con los enfriamientos
+local bm = ForeverSubastas.botonMinimapa
+local antes = #LINEAS
+bm._scripts.OnEnter(bm)
+for k = antes + 1, #LINEAS do
+  if LINEAS[k]:find("Transmutar: arcanita", 1, true) then MINIMAPA_CD = LINEAS[k] end
+  if LINEAS[k]:find("hierro a oro", 1, true) then MINIMAPA_ORO = true end
+end
+-- El juego da la lista de Alquimia diciendo que es Sastrería (al cambiar de profesión): se corrige con los datos
+local base = C_TradeSkillUI.GetBaseProfessionInfo
+C_TradeSkillUI.GetBaseProfessionInfo = function() return { professionID = 197, skillLevel = 240, maxSkillLevel = 300 } end
+ev._scripts.OnEvent(ev, "TRADE_SKILL_LIST_UPDATE")
+C_TradeSkillUI.GetBaseProfessionInfo = base
+SUBIR_197 = pjc.subir[197] ~= nil
+CD_PROF = pjc.cd[12360].prof
 
 local pj = ForeverSubastas.Personaje()
 CONOCE_118 = pj.conocidas[118] and true or false
@@ -369,6 +386,10 @@ def main() -> int:
     print("Enfriamientos:", g.FILA_ARCANITA, "·", g.INFO_FABRICAR)
     print("   /fsub cd:", g.CD_LISTA)
     print("   aviso:", g.AVISOS_1, g.AVISOS_2, g.AVISO_TEXTO, "· tras lanzar:", g.CD_TRAS_LANZAR, "h · tras leer:", g.CD_TRAS_LEER)
+    print("   minimapa:", g.MINIMAPA_CD, "· profesión corregida:", not g.SUBIR_197, g.CD_PROF)
+    assert g.MINIMAPA_CD and "Suci" in g.MINIMAPA_CD, "el botón del minimapa no muestra los enfriamientos"
+    assert not g.MINIMAPA_ORO, "el minimapa no debe mostrar los enfriamientos de 1 h"
+    assert not g.SUBIR_197 and g.CD_PROF == 171, "debería detectar que la lista leída es de Alquimia"
     print("   tooltip:", g.TOOLTIP_CD2, "·", g.TOOLTIP_CD)
     assert g.TOOLTIP_CD and g.TOOLTIP_CD2, "el tooltip de la receta no muestra el enfriamiento ni el beneficio por día"
     assert g.CD_FIN_OK, "no guardó el enfriamiento de la arcanita"

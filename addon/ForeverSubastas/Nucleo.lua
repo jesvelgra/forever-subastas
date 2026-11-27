@@ -331,6 +331,10 @@ local function LeerRecetasConocidas()
     local pj = Personaje()
     local prof, infoProf = ProfesionAbierta()
     local colores = { items = {}, nombres = {} }
+    -- Al cambiar de profesión con la ventana abierta, el juego puede dar la lista nueva con el nombre de la
+    -- anterior: se comprueba con las recetas de los datos a qué profesión pertenece de verdad lo leído.
+    local votos, pendientesCd = {}, {}
+    local porProducto = FS.Indices and FS.Indices() or {}
     for _, rid in ipairs(T.GetAllRecipeIDs() or {}) do
         local info = T.GetRecipeInfo(rid)
         if info then
@@ -346,7 +350,10 @@ local function LeerRecetasConocidas()
             if info.learned then
                 if item then pj.conocidas[item] = true end
                 if info.name then pj.nombres[info.name] = true end
-                RegistrarEnfriamiento(pj, T, rid, item, info.name, prof)
+                table.insert(pendientesCd, { rid, item, info.name })
+            end
+            for _, r in ipairs(item and porProducto[item] or {}) do
+                votos[r[R_PROF]] = (votos[r[R_PROF]] or 0) + 1
             end
             local dif = Dificultad(info)
             if dif then
@@ -376,6 +383,16 @@ local function LeerRecetasConocidas()
                 if info.name then colores.nombres[info.name] = dato end
             end
         end
+    end
+    local mejor
+    for p, n in pairs(votos) do
+        if not mejor or n > votos[mejor] then mejor = p end
+    end
+    if mejor and mejor ~= prof and votos[mejor] >= 3 and (votos[prof] or 0) * 2 < votos[mejor] then
+        prof, infoProf = mejor, nil
+    end
+    for _, x in ipairs(pendientesCd) do
+        RegistrarEnfriamiento(pj, T, x[1], x[2], x[3], prof)
     end
     if prof and next(colores.nombres) then
         pj.subir = pj.subir or {}
@@ -425,7 +442,7 @@ end
 -- Enfriamiento de una receta conocida: texto ("lista" o el tiempo que falta) y la entrada guardada.
 local function EnfriamientoReceta(pj, r)
     local e = pj.cd and pj.cd[r[R_ITEM]]
-    if not e or (e.prof and e.prof ~= r[R_PROF]) then return nil end
+    if not e or (e.prof and e.prof ~= r[R_PROF] and e.nombre ~= r[R_NOMBRE]) then return nil end
     local resto = (e.fin or 0) - (time and time() or 0)
     if resto <= 0 then return VERDE .. "lista" .. FIN, e end
     return NARANJA .. TiempoCorto(resto) .. FIN, e
@@ -520,6 +537,89 @@ local function ListarEnfriamientos()
     end
 end
 
+---------------------------------------------------------------------------
+-- Botón del minimapa: al pasar el ratón enseña los enfriamientos de todos tus personajes
+---------------------------------------------------------------------------
+
+local function TooltipMinimapa(boton)
+    local _, db = Personaje()
+    GameTooltip:SetOwner(boton, "ANCHOR_LEFT")
+    GameTooltip:SetText("Forever Subastas")
+    local ahora = time and time() or 0
+    local filas = {}
+    for clave, pj in pairs(db.pj or {}) do
+        for item, e in pairs(pj.cd or {}) do
+            if (e.h or CD_AVISO_HORAS) >= CD_AVISO_HORAS then
+                table.insert(filas, { fin = e.fin or 0, izq = (e.nombre or NombreObjeto(item)) .. GRIS .. "  " ..
+                    NombrePj(clave) .. FIN })
+            end
+        end
+    end
+    table.sort(filas, function(a, b) return a.fin < b.fin end)
+    if #filas > 0 then
+        GameTooltip:AddLine("Enfriamientos", 1, 0.82, 0)
+        for _, f in ipairs(filas) do
+            local resto = f.fin - ahora
+            GameTooltip:AddDoubleLine(f.izq, resto <= 0 and "lista" or TiempoCorto(resto), 1, 1, 1,
+                resto <= 0 and 0.12 or 1, resto <= 0 and 1 or 0.6, resto <= 0 and 0 or 0.2)
+        end
+    else
+        GameTooltip:AddLine("Abre Alquimia o Sastrería una vez para apuntar tus enfriamientos.", 0.6, 0.6, 0.6, true)
+    end
+    if D and D.ultimaDescarga then
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("Datos de la subasta: " .. D.ultimaDescarga, 0.6, 0.6, 0.6)
+    end
+    GameTooltip:AddLine(" ")
+    GameTooltip:AddLine("Clic: abrir · Clic derecho: Qué vender · Arrastrar: mover", 0.12, 1, 0)
+    GameTooltip:Show()
+end
+
+local function ColocarEnMinimapa(b, angulo)
+    local radio = (Minimap:GetWidth() or 140) / 2 + 5
+    b:ClearAllPoints()
+    b:SetPoint("CENTER", Minimap, "CENTER", math.cos(math.rad(angulo)) * radio, math.sin(math.rad(angulo)) * radio)
+end
+
+local function CrearBotonMinimapa()
+    if not Minimap or FS.botonMinimapa then return end
+    local _, db = Personaje()
+    local b = CreateFrame("Button", "ForeverSubastasBotonMinimapa", Minimap)
+    FS.botonMinimapa = b
+    b:SetSize(31, 31)
+    b:SetFrameStrata("MEDIUM")
+    b:SetFrameLevel(8)
+    b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    b:RegisterForDrag("LeftButton")
+    b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    local icono = b:CreateTexture(nil, "BACKGROUND")
+    icono:SetTexture("Interface\\Icons\\INV_Misc_Coin_01")
+    icono:SetSize(20, 20)
+    icono:SetPoint("TOPLEFT", 7, -5)
+    local borde = b:CreateTexture(nil, "OVERLAY")
+    borde:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    borde:SetSize(53, 53)
+    borde:SetPoint("TOPLEFT")
+    ColocarEnMinimapa(b, db.minimapa or 210)
+    b:SetScript("OnDragStart", function(self)
+        self:SetScript("OnUpdate", function(boton)
+            local mx, my = Minimap:GetCenter()
+            local cx, cy = GetCursorPosition()
+            local escala = Minimap:GetEffectiveScale()
+            if not (mx and cx and escala) then return end
+            db.minimapa = math.deg(math.atan2(cy / escala - my, cx / escala - mx))
+            ColocarEnMinimapa(boton, db.minimapa)
+        end)
+    end)
+    b:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+    b:SetScript("OnClick", function(_, boton)
+        if boton == "RightButton" then FS.Mostrar(nil, "vender") else FS.Mostrar() end
+    end)
+    b:SetScript("OnEnter", TooltipMinimapa)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    if db.sinMinimapa then b:Hide() end
+end
+
 local porItem, porReactivo
 local function Indices()
     if porItem then return porItem, porReactivo end
@@ -534,6 +634,7 @@ local function Indices()
     end
     return porItem, porReactivo
 end
+FS.Indices = Indices
 
 ---------------------------------------------------------------------------
 -- Consejo de venta (tooltip y pestaña "Qué vender")
@@ -2194,6 +2295,7 @@ eventos:SetScript("OnEvent", function(_, evento, arg1, arg2, arg3)
         else
             Imprimir("no encuentro Datos.lua.")
         end
+        pcall(CrearBotonMinimapa)
         pcall(AvisarEnfriamientos)
         -- Y mientras juegas, se mira cada 5 minutos si alguno ha quedado listo.
         if C_Timer and C_Timer.NewTicker then
@@ -2259,7 +2361,7 @@ SlashCmdList = SlashCmdList or {}
 SlashCmdList["FOREVERSUBASTAS"] = function(texto)
     texto = (texto or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
     if texto == "ayuda" or texto == "help" then
-        Imprimir("/subastas abre la ventana (qué fabricar, qué vender y tus cuentas). /subastas subir, /subastas vender, /subastas chollos y /subastas cuentas van directos a esas pestañas. /subastas cd muestra tus enfriamientos (Tela lunar, transmutaciones) y /subastas avisos activa o quita el aviso en el chat cuando quedan listos. Pasa el ratón por cualquier objeto para ver precios, tendencia, mejores horas y a cuánto venderlo. Abre tus profesiones una vez para que sepa qué recetas conoces.")
+        Imprimir("/subastas abre la ventana (qué fabricar, qué vender y tus cuentas). /subastas subir, /subastas vender, /subastas chollos y /subastas cuentas van directos a esas pestañas. /subastas cd muestra tus enfriamientos (Tela lunar, transmutaciones) y /subastas avisos activa o quita el aviso en el chat cuando quedan listos. El botón del minimapa enseña tus enfriamientos al pasar el ratón (/subastas minimapa lo oculta). Pasa el ratón por cualquier objeto para ver precios, tendencia, mejores horas y a cuánto venderlo. Abre tus profesiones una vez para que sepa qué recetas conoces.")
     elseif texto == "vender" then
         FS.Mostrar(nil, "vender")
     elseif texto == "subir" then
@@ -2272,6 +2374,13 @@ SlashCmdList["FOREVERSUBASTAS"] = function(texto)
         FS.Mostrar("todas", "fabricar")
     elseif texto == "cd" or texto == "enfriamientos" then
         ListarEnfriamientos()
+    elseif texto == "minimapa" then
+        local _, db = Personaje()
+        db.sinMinimapa = not db.sinMinimapa or nil
+        if FS.botonMinimapa then
+            if db.sinMinimapa then FS.botonMinimapa:Hide() else FS.botonMinimapa:Show() end
+        end
+        Imprimir(db.sinMinimapa and "botón del minimapa oculto (/fsub minimapa para volver a verlo)." or "botón del minimapa visible.")
     elseif texto == "avisos" then
         local _, db = Personaje()
         db.sinAvisosCd = not db.sinAvisosCd or nil
