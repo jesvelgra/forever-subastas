@@ -1928,6 +1928,36 @@ local function BotonEn(marco, texto, alClic, clave, desplazamiento, debajo)
     marco[clave] = b
 end
 
+-- Botones de la subasta: a la derecha de las pestañas si hay sitio; si las pestañas (de Blizzard,
+-- Auctionator u otros addons) llegan hasta esa zona, se bajan por debajo de la fila de pestañas.
+-- Las pestañas de Auctionator (LibAHTab) son nietas del marco: cuelgan de un marco intermedio.
+function FS.ColocarBotonesSubasta()
+    local f = AuctionHouseFrame
+    local vender, chollos = f and f.ForeverSubastasBoton, f and f.ForeverSubastasBotonChollos
+    if not (vender and chollos) then return end
+    local fondo, derecha = f:GetBottom(), f:GetRight()
+    local hueco = 0
+    local ancho = 2 * 120 + 4 + 8
+    local function Revisar(marco, nivel)
+        if not marco.GetChildren then return end
+        for _, hijo in ipairs({ marco:GetChildren() }) do
+            if hijo ~= vender and hijo ~= chollos and hijo.IsShown and hijo:IsShown() then
+                local b, t, d = hijo:GetBottom(), hijo:GetTop(), hijo:GetRight()
+                -- Lo que cuelga por debajo del marco (las pestañas) y llega a la zona de los botones.
+                if b and t and d and b < fondo - 2 and t <= fondo + 12 and (t - b) < 60 and d > derecha - ancho then
+                    hueco = math.max(hueco, fondo - b)
+                end
+                if nivel < 2 then Revisar(hijo, nivel + 1) end
+            end
+        end
+    end
+    if fondo and derecha then Revisar(f, 1) end
+    vender:ClearAllPoints()
+    vender:SetPoint("TOPRIGHT", f, "BOTTOMRIGHT", 0, hueco > 0 and -(hueco + 2) or -2)
+    chollos:ClearAllPoints()
+    chollos:SetPoint("RIGHT", vender, "LEFT", -4, 0)
+end
+
 local function AbrirSubir()
     local prof = ProfesionAbierta()
     if prof then estado.profSubir = prof end
@@ -2011,6 +2041,12 @@ eventos:SetScript("OnEvent", function(_, evento, arg1, arg2)
     elseif evento == "AUCTION_HOUSE_SHOW" then
         pcall(EngancharSubasta)
         pcall(CrearBotonesExternos)
+        pcall(FS.ColocarBotonesSubasta)
+        -- Auctionator y otros añaden sus pestañas al abrir la subasta: se vuelve a mirar un poco después.
+        if C_Timer then
+            C_Timer.After(0.3, function() pcall(FS.ColocarBotonesSubasta) end)
+            C_Timer.After(1.5, function() pcall(FS.ColocarBotonesSubasta) end)
+        end
     elseif evento == "COMMODITY_PRICE_UPDATED" then
         ultimoTotalCompra = arg2
         if compraPendiente then compraPendiente.total = arg2 end

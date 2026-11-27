@@ -23,6 +23,7 @@ local function mock(nombre)
     if k == "SetText" then return function(self, x) self._texto = x end end
     if k == "GetText" then return function(self) return self._texto end end
     if k == "SetEnabled" then return function(self, x) self._enabled = x end end
+    if k == "SetPoint" then return function(self, ...) self._punto = {...} end end
     if k == "CreateFontString" or k == "CreateTexture" then return function() return mock(k) end end
     return function() end
   end })
@@ -252,6 +253,33 @@ C_Container.GetContainerItemInfo = function(b, s) if s == 1 then return { itemID
 ForeverSubastas.VenderChollos()
 VENDIDOS_SOLO = #VENDIDOS
 
+-- Botones de la subasta: con pocas pestañas van a su lado; si las pestañas llegan a su zona, bajan
+local function hijo(b, t, d)
+  local m = MOCK("pestaña"); m._shown = true
+  m.GetBottom = function() return b end; m.GetTop = function() return t end; m.GetRight = function() return d end
+  return m
+end
+local HIJOS = { hijo(70, 102, 500), hijo(300, 700, 990) }   -- pestañas de Blizzard y un panel interior
+AuctionHouseFrame = {}
+AuctionHouseFrame.GetBottom = function() return 100 end
+AuctionHouseFrame.GetRight = function() return 1000 end
+AuctionHouseFrame.GetChildren = function(self)
+  local t = {}
+  for _, h in ipairs(HIJOS) do table.insert(t, h) end
+  if self.ForeverSubastasBoton then table.insert(t, self.ForeverSubastasBoton) end
+  if self.ForeverSubastasBotonChollos then table.insert(t, self.ForeverSubastasBotonChollos) end
+  return unpack(t)
+end
+ev._scripts.OnEvent(ev, "AUCTION_HOUSE_SHOW")
+Y_BOTON_SOLO = AuctionHouseFrame.ForeverSubastasBoton._punto[5]
+-- Pestañas de Auctionator: cuelgan de un marco intermedio de 10x10 (LibAHTab) y llegan a la zona de los botones
+local raiz = hijo(92, 102, 410)
+raiz.GetChildren = function() return hijo(68, 102, 560), hijo(68, 102, 780) end
+table.insert(HIJOS, raiz)
+ev._scripts.OnEvent(ev, "AUCTION_HOUSE_SHOW")
+Y_BOTON_AUCTIONATOR = AuctionHouseFrame.ForeverSubastasBoton._punto[5]
+ANCLA_CHOLLOS = AuctionHouseFrame.ForeverSubastasBotonChollos._punto[1] .. "/" .. AuctionHouseFrame.ForeverSubastasBotonChollos._punto[3]
+
 local pj = ForeverSubastas.Personaje()
 CONOCE_118 = pj.conocidas[118] and true or false
 PROF_171 = pj.profs[171]
@@ -286,6 +314,10 @@ def main() -> int:
           "· vendidos mezclados/solos:", g.VENDIDOS_MEZCLA, g.VENDIDOS_SOLO)
     nuevas = list(g.LINEAS.values())[g.LINEAS_ANTES:]
     print("Tooltip tras escanear:", [l for l in nuevas if "Mínimo" in l or "Chollo" in l])
+    print("Botones de la subasta: y =", g.Y_BOTON_SOLO, "sin Auctionator;", g.Y_BOTON_AUCTIONATOR, "con Auctionator;", g.ANCLA_CHOLLOS)
+    assert g.Y_BOTON_SOLO == -2, "sin pestañas en su zona, los botones van al lado de las pestañas"
+    assert g.Y_BOTON_AUCTIONATOR == -34, "con pestañas en su zona, los botones bajan debajo de ellas"
+    assert g.ANCLA_CHOLLOS == "RIGHT/LEFT", "Chollos va a la izquierda de Qué vender"
     assert g.CONOCE_118 is True, "no registró la receta conocida"
     assert g.PROF_171 == 180, "no registró la profesión"
     assert any("Subasta Alianza JcJ" in l for l in lineas), "el tooltip no añade datos"
