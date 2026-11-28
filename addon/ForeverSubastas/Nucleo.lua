@@ -21,6 +21,7 @@ local I_VEND, I_CHOLLO = 21, 22
 -- Posiciones dentro de cada receta de D.r
 local R_PROF, R_NOMBRE, R_ITEM, R_COSTE, R_VENTA, R_BENEF, R_VD, R_DONDE, R_REAG, R_FALTA = 2, 3, 4, 6, 7, 8, 9, 10, 11, 12
 local R_PATRON, R_NIVEL = 13, 14
+local R_BASE, R_ESPER, R_PROB = 15, 16, 17   -- materiales base, beneficio esperado, % de venta por anuncio
 
 local MAX_OPERACIONES = 5000
 
@@ -172,6 +173,46 @@ local function ContarObjeto(id)
     if GetItemCount then return GetItemCount(id, true) or 0 end
     return 0
 end
+
+-- Lo que tienes de un objeto en todos tus personajes de la facción (bolsas, banco y correo), con Syndicator.
+-- Sin Syndicator: bolsas y banco del personaje actual. Devuelve total, lo de este personaje y el detalle.
+local function SyndicatorListo()
+    return Syndicator and Syndicator.API and Syndicator.API.GetInventoryInfoByItemID
+        and (not Syndicator.API.IsReady or Syndicator.API.IsReady())
+end
+
+local function ContarEnBolsas(id)
+    if C_Item and C_Item.GetItemCount then
+        local ok, n = pcall(C_Item.GetItemCount, id, false)
+        if ok and n then return n end
+    end
+    if GetItemCount then return GetItemCount(id, false) or 0 end
+    return 0
+end
+
+local function Existencias(id)
+    local propio = ContarObjeto(id)
+    if not SyndicatorListo() then return propio, propio, {} end
+    local ok, info = pcall(Syndicator.API.GetInventoryInfoByItemID, id, false, true)
+    if not ok or type(info) ~= "table" then return propio, propio, {} end
+    local yo = UnitName and UnitName("player")
+    local total, detalle = 0, {}
+    for _, c in ipairs(info.characters or {}) do
+        local n = (c.bags or 0) + (c.bank or 0) + (c.mail or 0)
+        if c.character == yo then
+            n = math.max(n, propio)
+        elseif n > 0 then
+            table.insert(detalle, { quien = c.character, n = n })
+        end
+        total = total + n
+    end
+    -- Syndicator aún no ha visto a este personaje: al menos lo que llevas encima.
+    local hayYo = false
+    for _, c in ipairs(info.characters or {}) do if c.character == yo then hayYo = true end end
+    if not hayYo then total = total + propio end
+    return total, propio, detalle
+end
+FS.Existencias = Existencias
 
 local function Imprimir(texto)
     if DEFAULT_CHAT_FRAME then
@@ -647,6 +688,17 @@ local function CrearBotonMinimapa()
     if db.sinMinimapa then b:Hide() end
 end
 
+-- Beneficio con el que se ordena y se muestra: el esperado (contando los depósitos que se pierden cuando
+-- no se vende a la primera) si hay datos; si no, el de vender a la primera.
+local function BeneficioReceta(r)
+    return r[R_ESPER] or r[R_BENEF]
+end
+
+local function HorasEnfriamiento(pj, r)
+    local e = pj and pj.cd and pj.cd[r[R_ITEM]]
+    return (e and e.h) or CD_HORAS[r[R_ITEM]]
+end
+
 local porItem, porReactivo
 local function Indices()
     if porItem then return porItem, porReactivo end
@@ -725,13 +777,13 @@ local function AnadirFabricacion(tt, id)
         table.sort(orden, function(x, y)
             local cx, cy = Conocida(pj, x) and 1 or 0, Conocida(pj, y) and 1 or 0
             if cx ~= cy then return cx > cy end
-            return (x[R_BENEF] or 0) > (y[R_BENEF] or 0)
+            return (BeneficioReceta(x) or 0) > (BeneficioReceta(y) or 0)
         end)
         for k = 1, math.min(2, #orden) do
             local r = orden[k]
             local prof = D.p[r[R_PROF]] or "profesión"
             local quien = Conocida(pj, r) and "" or (GRIS .. " (no la conoces)" .. FIN)
-            local benef = Moneda(r[R_BENEF])
+            local benef = Moneda(BeneficioReceta(r))
             if r[R_FALTA] then benef = benef .. ROJO .. " *" .. FIN end
             tt:AddDoubleLine("Si lo fabricas (" .. prof .. ")" .. quien, benef, 1, 0.82, 0, 1, 1, 1)
             tt:AddDoubleLine(GRIS .. "   materiales " .. FIN .. Moneda(r[R_COSTE]),
@@ -746,12 +798,12 @@ local function AnadirFabricacion(tt, id)
     if usos and next(pj.profs) then
         local mejor
         for _, r in ipairs(usos) do
-            if pj.profs[r[R_PROF]] and not r[R_FALTA] and (r[R_BENEF] or 0) > 0 then
-                if not mejor or r[R_BENEF] > mejor[R_BENEF] then mejor = r end
+            if pj.profs[r[R_PROF]] and not r[R_FALTA] and (BeneficioReceta(r) or 0) > 0 then
+                if not mejor or BeneficioReceta(r) > BeneficioReceta(mejor) then mejor = r end
             end
         end
         if mejor then
-            tt:AddDoubleLine("Mejor receta tuya con esto", mejor[R_NOMBRE] .. " (" .. Moneda(mejor[R_BENEF]) .. ")",
+            tt:AddDoubleLine("Mejor receta tuya con esto", mejor[R_NOMBRE] .. " (" .. Moneda(BeneficioReceta(mejor)) .. ")",
                 1, 0.82, 0, 1, 1, 1)
         end
     end
@@ -835,19 +887,85 @@ end
 -- Lista de la compra para Auctionator
 ---------------------------------------------------------------------------
 
-local function CrearListaCompra(r, veces)
-    local terminos, vendedor = {}, {}
-    for _, m in ipairs(r[R_REAG] or {}) do
-        local id, q, precio, fuente = m[1], m[2], m[3], m[4]
-        local falta = q * veces - ContarObjeto(id)
-        if falta > 0 then
-            local nombre = NombreObjeto(id)
-            if fuente == "v" then
-                table.insert(vendedor, falta .. "x " .. nombre)
-            else
-                table.insert(terminos, { nombre = nombre, cant = falta, max = precio and math.ceil(precio * 1.2) or nil })
-            end
+-- Receta más barata de la misma profesión para fabricar un intermedio (madejas, lingotes...).
+local function RecetaIntermedio(id, prof)
+    local pi = Indices()
+    local mejor
+    for _, r in ipairs(pi[id] or {}) do
+        if r[R_PROF] == prof and not r[R_FALTA] and r[R_COSTE] then
+            local porUnidad = r[R_COSTE] / math.max(1, r[5] or 1)
+            if not mejor or porUnidad < mejor[2] then mejor = { r, porUnidad } end
         end
+    end
+    return mejor and mejor[1]
+end
+
+-- Cuántas veces puedes fabricar una receta con lo que ya tienes (bolsas, banco y otros personajes).
+function FS.VecesConLoQueTienes(r)
+    local veces
+    for _, m in ipairs(r[R_REAG] or {}) do
+        local n = math.floor(Existencias(m[1]) / math.max(1, m[2]))
+        if not veces or n < veces then veces = n end
+    end
+    return veces or 0
+end
+
+-- Reparte lo que hace falta: primero lo que ya tienes, luego fabricar intermedios, luego comprar.
+local function Necesidades(id, cant, fuente, prof, usado, compra, vendedor, recoger, nivel)
+    local total, propio, detalle = Existencias(id)
+    local libre = math.max(0, total - (usado[id] or 0))
+    local usa = math.min(libre, cant)
+    if usa > 0 then
+        -- Lo que no llevas en las bolsas: avisar de dónde recogerlo (tu banco u otros personajes).
+        local bolsas = ContarEnBolsas(id)
+        local encima = math.max(0, bolsas - (usado[id] or 0))
+        if usa > encima then
+            local donde = {}
+            if propio > bolsas then table.insert(donde, { quien = "tu banco", n = propio - bolsas }) end
+            for _, d in ipairs(detalle) do table.insert(donde, d) end
+            table.insert(recoger, { id = id, n = usa - encima, detalle = donde })
+        end
+        usado[id] = (usado[id] or 0) + usa
+    end
+    local falta = cant - usa
+    if falta <= 0 then return end
+    local rec = fuente == "f" and nivel < 3 and RecetaIntermedio(id, prof)
+    if rec then
+        local veces = math.ceil(falta / math.max(1, rec[5] or 1))
+        for _, m in ipairs(rec[R_REAG] or {}) do
+            Necesidades(m[1], m[2] * veces, m[4], prof, usado, compra, vendedor, recoger, nivel + 1)
+        end
+    elseif fuente == "v" then
+        vendedor[id] = (vendedor[id] or 0) + falta
+    else
+        compra[id] = (compra[id] or 0) + falta
+    end
+end
+
+local function CrearListaCompra(r, veces)
+    local usado, compra, porVendedor, recoger = {}, {}, {}, {}
+    local precios = {}
+    for _, m in ipairs(r[R_REAG] or {}) do
+        precios[m[1]] = m[3]
+        Necesidades(m[1], m[2] * veces, m[4], r[R_PROF], usado, compra, porVendedor, recoger, 0)
+    end
+    local terminos, vendedor = {}, {}
+    for id, n in pairs(compra) do
+        local d = D.i and D.i[id]
+        local precio = precios[id] or (d and (d[I_CMP] or d[I_MIN]))
+        table.insert(terminos, { nombre = NombreObjeto(id), cant = n, max = precio and math.ceil(precio * 1.2) or nil })
+    end
+    table.sort(terminos, function(x, y) return x.nombre < y.nombre end)
+    for id, n in pairs(porVendedor) do table.insert(vendedor, n .. "x " .. NombreObjeto(id)) end
+    if #recoger > 0 then
+        local partes = {}
+        for _, x in ipairs(recoger) do
+            local donde = {}
+            for _, d in ipairs(x.detalle or {}) do table.insert(donde, d.quien .. " " .. d.n) end
+            table.insert(partes, x.n .. "x " .. NombreObjeto(x.id) ..
+                (#donde > 0 and (" (" .. table.concat(donde, ", ") .. ")") or ""))
+        end
+        Imprimir("ya lo tienes guardado, recógelo antes de fabricar: " .. table.concat(partes, ", "))
     end
     if #terminos == 0 and #vendedor == 0 then
         Imprimir("ya tienes todos los materiales para fabricar " .. veces .. "x " .. r[R_NOMBRE] .. ".")
@@ -1377,8 +1495,14 @@ local function ListaFabricar()
         if valida then table.insert(salida, { r = r, conocida = conocida }) end
     end
     local function clave(x)
-        local b = x.r[R_BENEF] or 0
-        if estado.orden == "dia" then b = b * math.min(x.r[R_VD] or 0, 20) end
+        local b = BeneficioReceta(x.r) or 0
+        if estado.orden == "dia" then
+            -- Oro al día: lo que se vende al día (hasta 20), o una vez por enfriamiento si lo tiene.
+            local tope = 20
+            local h = HorasEnfriamiento(pj, x.r)
+            if h and h >= 2 then tope = 24 / h end
+            b = b * math.min(x.r[R_VD] or 0, tope)
+        end
         return b
     end
     table.sort(salida, function(x, y)
@@ -1735,19 +1859,64 @@ local function LeerBolsas()
     return cuenta
 end
 
+-- Lo que se puede vender (sin ligar): tus bolsas y, con Syndicator, tu banco y tus otros personajes
+-- de la misma facción. id -> { n = total, bolsas = n, otros = { [lugar] = n } }
+local function LeerInventarioCompleto()
+    local cuenta = {}
+    local function Sumar(id, n, lugar)
+        local e = cuenta[id]
+        if not e then
+            e = { n = 0, bolsas = 0, otros = {} }
+            cuenta[id] = e
+        end
+        e.n = e.n + n
+        if lugar == "bolsas" then e.bolsas = e.bolsas + n else e.otros[lugar] = (e.otros[lugar] or 0) + n end
+    end
+    for id, n in pairs(LeerBolsas()) do Sumar(id, n, "bolsas") end
+    if SyndicatorListo() and Syndicator.API.GetAllCharacters and Syndicator.API.GetCharacter then
+        local yo = UnitName and UnitName("player")
+        local faccion = UnitFactionGroup and UnitFactionGroup("player")
+        local ok, lista = pcall(Syndicator.API.GetAllCharacters)
+        for _, nombre in ipairs(ok and lista or {}) do
+            local datos = Syndicator.API.GetCharacter(nombre)
+            local det = datos and datos.details
+            if det and not (det.show and det.show.inventory == false)
+                and (not faccion or not det.faction or det.faction == faccion) then
+                local esYo = det.character == yo
+                local function Recorrer(contenedores, lugar)
+                    for _, bolsa in pairs(contenedores or {}) do
+                        local huecos = type(bolsa) == "table" and (bolsa.slots or bolsa) or {}
+                        for _, h in pairs(huecos) do
+                            if type(h) == "table" and h.itemID and not h.isBound then
+                                Sumar(h.itemID, h.itemCount or 1, lugar)
+                            end
+                        end
+                    end
+                end
+                if not esYo then Recorrer(datos.bags, det.character) end
+                Recorrer(datos.bank, esYo and "banco" or det.character)
+                Recorrer(datos.bankTabs, esYo and "banco" or det.character)
+            end
+        end
+    end
+    return cuenta
+end
+
 local function ListaVender()
     local salida = {}
-    local total = 0
-    for id, cant in pairs(LeerBolsas()) do
+    local total, enBolsas = 0, 0
+    for id, e in pairs(LeerInventarioCompleto()) do
         local c = ConsejoVenta(id)
         if c and c.precio then
-            local neto = c.accion == "vendedor" and c.precio * cant or c.precio * cant * 0.95
+            local factor = c.accion == "vendedor" and 1 or 0.95
+            local neto = c.precio * e.n * factor
             total = total + neto
-            table.insert(salida, { id = id, cant = cant, c = c, total = neto })
+            enBolsas = enBolsas + c.precio * e.bolsas * factor
+            table.insert(salida, { id = id, cant = e.n, otros = e.otros, c = c, total = neto })
         end
     end
     table.sort(salida, function(x, y) return x.total > y.total end)
-    return salida, total
+    return salida, total, enBolsas
 end
 
 local function ResumenMercado()
@@ -1776,11 +1945,20 @@ local function TooltipReceta(fila, r, conocida)
     GameTooltip:AddLine("Materiales:")
     for _, m in ipairs(r[R_REAG] or {}) do
         local id, cant, precio, fuente = m[1], m[2], m[3], m[4]
-        local donde = fuente == "v" and (GRIS .. " vendedor" .. FIN) or ""
+        local donde = ""
+        if fuente == "v" then donde = GRIS .. " vendedor" .. FIN end
+        if fuente == "f" then donde = VERDE .. " fabrícalo tú (sale más barato)" .. FIN end
+        local tienes = Existencias(id)
+        if tienes > 0 then donde = donde .. GRIS .. " · tienes " .. tienes .. FIN end
         GameTooltip:AddDoubleLine("  " .. cant .. "x " .. NombreObjeto(id) .. donde,
             precio and Moneda(precio * cant) or (ROJO .. "sin precio" .. FIN), 1, 1, 1, 1, 1, 1)
     end
     GameTooltip:AddDoubleLine("Coste total", Moneda(r[R_COSTE]), 1, 1, 1, 1, 1, 1)
+    local veces = FS.VecesConLoQueTienes and FS.VecesConLoQueTienes(r) or 0
+    if veces > 0 then
+        GameTooltip:AddDoubleLine("Con lo que tienes (bolsas, banco y personajes)", "para " .. veces .. " veces",
+            1, 1, 1, 0.12, 1, 0)
+    end
     local pjr = Personaje()
     local col = pjr.subir and pjr.subir[r[R_PROF]]
     local dato = col and col.items[r[R_ITEM]]
@@ -1793,15 +1971,21 @@ local function TooltipReceta(fila, r, conocida)
     if r[R_DONDE] == "mercado" then textoVenta = textoVenta .. GRIS .. " · precio de mercado" .. FIN end
     if r[R_DONDE] == "real" then textoVenta = textoVenta .. VERDE .. " · ventas reales" .. FIN end
     GameTooltip:AddDoubleLine(textoVenta, Moneda(r[R_VENTA]), 1, 1, 1, 1, 1, 1)
-    GameTooltip:AddDoubleLine("Beneficio por fabricación", Moneda(r[R_BENEF]), 1, 1, 1, 1, 1, 1)
+    if r[R_ESPER] and r[R_DONDE] ~= "vendedor" then
+        GameTooltip:AddDoubleLine("Beneficio si se vende a la primera", Moneda(r[R_BENEF]), 1, 1, 1, 1, 1, 1)
+        GameTooltip:AddDoubleLine("Beneficio esperado" .. GRIS .. " (se vende el " .. (r[R_PROB] or "?") ..
+            "% de las veces; si caduca pierdes el depósito)" .. FIN, Moneda(r[R_ESPER]), 1, 0.82, 0, 1, 1, 1)
+    else
+        GameTooltip:AddDoubleLine("Beneficio por fabricación", Moneda(r[R_BENEF]), 1, 1, 1, 1, 1, 1)
+    end
     local textoCd, e = nil, nil
     if conocida then textoCd, e = EnfriamientoReceta(pjr, r) end
     local horas = (e and e.h) or CD_HORAS[r[R_ITEM]]
     if horas and horas >= 2 then
         GameTooltip:AddDoubleLine("Enfriamiento: cada " .. horas .. " h",
             textoCd and ("tu enfriamiento: " .. textoCd) or "", 1, 1, 1, 1, 1, 1)
-        if (r[R_BENEF] or 0) > 0 then
-            GameTooltip:AddDoubleLine("Beneficio por día de enfriamiento", Moneda(math.floor(r[R_BENEF] * 24 / horas)),
+        if (BeneficioReceta(r) or 0) > 0 then
+            GameTooltip:AddDoubleLine("Beneficio por día de enfriamiento", Moneda(math.floor(BeneficioReceta(r) * 24 / horas)),
                 1, 1, 1, 1, 1, 1)
         end
     elseif textoCd then
@@ -1937,7 +2121,7 @@ local function Refrescar()
     if modo == "fabricar" then
         lista = ListaFabricar()
         ventana.botonProf:SetText("Profesión: " .. TextoProfesion(estado.prof))
-        ventana.botonOrden:SetText(estado.orden == "dia" and "Orden: beneficio x ventas" or "Orden: por unidad")
+        ventana.botonOrden:SetText(estado.orden == "dia" and "Orden: oro por día" or "Orden: por unidad")
         ventana.botonVenta:SetText("Solo lo que se vende: " .. (estado.soloVenta and "sí" or "no"))
         ventana.botonConocidas:SetText("Solo las que conozco: " .. (estado.soloConocidas and "sí" or "no"))
         local edad = HorasDesde(D.generadoTs)
@@ -1980,10 +2164,16 @@ local function Refrescar()
         end
         pie = "Compra con la lista de Auctionator y luego en cualquier vendedor pulsa 'Vender chollos'. Clic en una fila: lista solo de ese objeto."
     elseif modo == "vender" then
-        local total
-        lista, total = ListaVender()
-        info = "Lo que llevas en las bolsas (sin ligados) se puede vender por unos " .. Moneda(total) ..
-            GRIS .. " · precios del " .. (D.ultimaDescarga or "?") .. FIN
+        local total, enBolsas
+        lista, total, enBolsas = ListaVender()
+        if SyndicatorListo() then
+            info = "Lo que tienes (bolsas, banco y personajes; sin ligados) se puede vender por unos " .. Moneda(total) ..
+                GRIS .. " · en tus bolsas: " .. FIN .. Moneda(enBolsas) .. GRIS .. " · precios del " ..
+                (D.ultimaDescarga or "?") .. FIN
+        else
+            info = "Lo que llevas en las bolsas (sin ligados) se puede vender por unos " .. Moneda(total) ..
+                GRIS .. " · precios del " .. (D.ultimaDescarga or "?") .. FIN
+        end
         pie = "\"Se vende\": probabilidad de venta a ese precio (aparece con unos días de historial). " .. ResumenMercado()
     else
         local tot
@@ -2011,10 +2201,12 @@ local function Refrescar()
             if r[R_FALTA] then nombre = nombre .. ROJO .. " *" .. FIN end
             local textoCd = x.conocida and EnfriamientoReceta(pjFab, r)
             if textoCd then nombre = nombre .. GRIS .. " · " .. FIN .. textoCd end
+            local tienesPara = x.conocida and FS.VecesConLoQueTienes(r) or 0
+            if tienesPara > 0 then nombre = nombre .. VERDE .. " · tienes para " .. tienesPara .. FIN end
             local di = D.i and D.i[r[R_ITEM]]
             c[1]:SetText(nombre)
             c[2]:SetText(GRIS .. (D.p[r[R_PROF]] or "") .. FIN)
-            c[3]:SetText(MonedaCorta(r[R_BENEF]))
+            c[3]:SetText(MonedaCorta(BeneficioReceta(r)))
             c[4]:SetText(Ventas(r[R_VD]))
             c[5]:SetText(TendenciaCorta(di and di[I_T7]))
             c[6]:SetText(MonedaCorta(r[R_COSTE]))
@@ -2047,7 +2239,11 @@ local function Refrescar()
         elseif modo == "vender" then
             local d = D.i and D.i[x.id]
             local colores = { ya = VERDE, hora = AMARILLO, espera = NARANJA, vendedor = BLANCO, nosevende = ROJO }
-            c[1]:SetText(BLANCO .. NombreObjeto(x.id) .. FIN)
+            local lugares = {}
+            for lugar, n in pairs(x.otros or {}) do table.insert(lugares, lugar .. " " .. n) end
+            table.sort(lugares)
+            c[1]:SetText(BLANCO .. NombreObjeto(x.id) .. FIN ..
+                (#lugares > 0 and (GRIS .. " · " .. table.concat(lugares, ", ") .. FIN) or ""))
             c[2]:SetText(tostring(x.cant))
             c[3]:SetText(MonedaCorta(x.c.precio))
             c[4]:SetText(x.c.prob and (x.c.prob .. "%") or (GRIS .. "-" .. FIN))

@@ -324,13 +324,14 @@ CD_ORO = pjc.cd[3577] and pjc.cd[3577].h
 v.pestanas.fabricar._scripts.OnClick(v.pestanas.fabricar)
 INFO_FABRICAR = v.info._texto
 FILA_ARCANITA = nil
+-- Bajar por la lista con la rueda hasta encontrar la arcanita
 for i = 1, 400 do
-  ForeverSubastas.Refrescar()
   for _, f in ipairs(v.filas) do
     local t = f.c[1]._texto or ""
     if t:find("Transmutar: arcanita", 1, true) then FILA_ARCANITA = t end
   end
   if FILA_ARCANITA then break end
+  v._scripts.OnMouseWheel(v, -1)
 end
 GameTooltip.SetOwner = function() end
 for _, f in ipairs(v.filas) do
@@ -340,6 +341,7 @@ for _, f in ipairs(v.filas) do
     for k = antes + 1, #LINEAS do
       if LINEAS[k]:find("por día de enfriamiento", 1, true) then TOOLTIP_CD = LINEAS[k] end
       if LINEAS[k]:find("Enfriamiento: cada", 1, true) then TOOLTIP_CD2 = LINEAS[k] end
+      if LINEAS[k]:find("Beneficio esperado", 1, true) then TOOLTIP_ESP = LINEAS[k] end
     end
   end
 end
@@ -381,6 +383,44 @@ local pj = ForeverSubastas.Personaje()
 CONOCE_118 = pj.conocidas[118] and true or false
 PROF_171 = pj.profs[171]
 SlashCmdList["FOREVERSUBASTAS"]("ayuda")
+
+-- Syndicator: Avi tiene 7 Flores de paz en las bolsas y 50 Paños rúnicos en el banco; Suci 3 Flores en el banco
+Syndicator = { API = {
+  IsReady = function() return true end,
+  GetInventoryInfoByItemID = function(id)
+    local t = { characters = {} }
+    if id == 2447 then
+      table.insert(t.characters, { character = "Avi", bags = 7, bank = 0, mail = 0 })
+      table.insert(t.characters, { character = "Suci Va", bags = 20, bank = 3, mail = 0 })
+    end
+    if id == 14047 then table.insert(t.characters, { character = "Avi", bags = 0, bank = 50, mail = 0 }) end
+    return t
+  end,
+  GetAllCharacters = function() return { "Suci Va-", "Avi-" } end,
+  GetCharacter = function(n)
+    if n == "Avi-" then
+      return { details = { character = "Avi", faction = "Alliance" }, bags = { { { itemID = 2447, itemCount = 7 } } },
+               bank = { { { itemID = 14047, itemCount = 50 } } } }
+    end
+    return { details = { character = "Suci Va", faction = "Alliance" }, bags = {}, bank = { { { itemID = 2447, itemCount = 3 } } } }
+  end,
+} }
+v.pestanas.vender._scripts.OnClick(v.pestanas.vender)
+for _, f in ipairs(v.filas) do
+  local t = f.c[1]._texto or ""
+  if t:find("Avi 7", 1, true) then VENDER_AVI = t .. " | " .. tostring(f.c[2]._texto) end
+end
+INFO_VENDER2 = v.info._texto
+-- Lista de la compra del Cinturón del archimago: las madejas se fabrican con paño rúnico (5 cada una);
+-- 50 paños están en el banco de Avi, así que solo hay que comprar 30
+local cint
+for _, r in ipairs(ForeverSubastasDatos.r) do if r[3] == "Cinturón del archimago" then cint = r end end
+LISTA_AUCTIONATOR = nil
+local chat0 = #CHAT
+ForeverSubastas.CrearListaCompra(cint, 1)
+LISTA_CINT = LISTA_AUCTIONATOR and table.concat(LISTA_AUCTIONATOR.cadenas, " / ")
+for k = chat0 + 1, #CHAT do if CHAT[k]:find("recógelo", 1, true) then RECOGER = CHAT[k] end end
+
 """
 
 
@@ -428,6 +468,15 @@ def main() -> int:
     assert g.MINIMAPA_CD and "Suci" in g.MINIMAPA_CD, "el botón del minimapa no muestra los enfriamientos"
     assert not g.MINIMAPA_ORO, "el minimapa no debe mostrar los enfriamientos de 1 h"
     assert not g.SUBIR_197 and g.CD_PROF == 171, "debería detectar que la lista leída es de Alquimia"
+    print("Syndicator: vender", g.VENDER_AVI, "·", g.INFO_VENDER2)
+    print("   lista cinturón:", g.LISTA_CINT)
+    print("   recoger:", g.RECOGER)
+    print("   esperado:", g.TOOLTIP_ESP)
+    assert g.VENDER_AVI and "banco 3" in g.VENDER_AVI and g.VENDER_AVI.endswith("| 15"), "Qué vender debe sumar bolsas (5), banco (3) y Avi (7)"
+    assert g.LISTA_CINT and '"Paño rúnico"' in g.LISTA_CINT and "Madeja" not in g.LISTA_CINT, "debería comprar paño, no madejas"
+    assert ";;30" in g.LISTA_CINT, "debería descontar los 50 paños de Avi (80 - 50 = 30)"
+    assert g.RECOGER and "Avi 50" in g.RECOGER, "debería avisar de recoger el paño de Avi"
+    assert g.TOOLTIP_ESP, "falta el beneficio esperado en el tooltip"
     print("   tooltip:", g.TOOLTIP_CD2, "·", g.TOOLTIP_CD)
     assert g.TOOLTIP_CD and g.TOOLTIP_CD2, "el tooltip de la receta no muestra el enfriamiento ni el beneficio por día"
     assert g.CD_FIN_OK, "no guardó el enfriamiento de la arcanita"

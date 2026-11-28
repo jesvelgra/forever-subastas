@@ -53,6 +53,9 @@ jobs:
           path: estado
           key: estado-${{ github.run_id }}-${{ github.run_attempt }}
 
+      - name: Quitar del árbol las descargas de más de 45 días (siguen en el historial)
+        run: DIR_BASE=. python recolector/podar.py
+
       - name: Subir los datos al repositorio
         run: |
           git config user.name "recolector"

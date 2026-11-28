@@ -191,3 +191,44 @@ class PruebasTendencia(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PruebasIntermediosYEsperado(unittest.TestCase):
+    def setUp(self):
+        # Paño (200) a 5c; la madeja (100) cuesta 50c en la subasta pero se hace con 5 paños (25c).
+        # La tela lunar (14342) se hace con 2 de paño pero tiene enfriamiento: se compra (58c).
+        self.estaticos = {
+            "profesiones": [{"id": 197, "nombre": "Sastrería"}],
+            "recetas": {
+                "1": {"prof": 197, "nombre": "Madeja", "item": 100, "cant": 1, "reag": [[200, 5]]},
+                "2": {"prof": 197, "nombre": "Cinturón", "item": 300, "cant": 1, "reag": [[100, 2], [14342, 1]]},
+                "3": {"prof": 197, "nombre": "Tela lunar", "item": 14342, "cant": 1, "reag": [[200, 2]]},
+            },
+            "items": {"300": {"n": "Cinturón", "venta": 100}},
+        }
+        self.items = {
+            200: {"cmp": 5, "tipo": "c"}, 100: {"cmp": 50, "tipo": "c"}, 14342: {"cmp": 58, "tipo": "c"},
+            300: {"pv": 1000, "tipo": "i", "rec_prob": 50},
+        }
+
+    def receta(self, nombre):
+        recetas = a.calcular_recetas(self.estaticos, self.items, {})
+        return next(r for r in recetas if r["nombre"] == nombre)
+
+    def test_fabrica_el_intermedio_si_sale_mas_barato(self):
+        r = self.receta("Cinturón")
+        madeja = next(x for x in r["reag"] if x[0] == 100)
+        self.assertEqual(madeja[3], "f")
+        self.assertEqual(madeja[2], 25)
+        self.assertEqual(r["coste"], 2 * 25 + 58)
+        base = {x[0]: x[1] for x in r["base"]}
+        self.assertEqual(base[200], 10)       # 2 madejas x 5 paños
+        self.assertEqual(base[14342], 1)      # la tela lunar se compra: tiene enfriamiento
+
+    def test_beneficio_esperado_cuenta_los_depositos(self):
+        r = self.receta("Cinturón")
+        venta = round(1000 * 0.95)
+        self.assertEqual(r["beneficio"], venta - 108)
+        # Se vende la mitad de las veces: de media se pierde un depósito (60 % de 100c = 60c; mínimo 1 plata = 100c).
+        self.assertEqual(r["prob"], 50)
+        self.assertEqual(r["esperado"], venta - 108 - 100)

@@ -29,6 +29,14 @@ from zoneinfo import ZoneInfo
 
 ZONA = ZoneInfo("Europe/Madrid")
 COMISION_SUBASTA = 0.05
+# Depósito de la subasta en Forever (como en Classic): 60 % de lo que paga el vendedor por 24 h, mínimo 1 plata
+# por anuncio. Se devuelve si se vende y se pierde si caduca.
+DEPOSITO_24H = 0.60
+DEPOSITO_MINIMO = 100
+PROB_VENTA_MINIMA = 0.05
+# Objetos con enfriamiento largo: no se pueden fabricar a voluntad, así que no cuentan como intermedios baratos.
+OBJETOS_CON_ENFRIAMIENTO = {14342, 12360, 251290, 7078, 7080, 7082, 7076, 12803, 12808}
+PROFUNDIDAD_INTERMEDIOS = 3
 DIAS_HISTORIAL = 28
 DIAS_VENTAS = 7
 MIN_DIAS_HORAS = 3      # días con datos para fiarse del patrón por horas
@@ -469,23 +477,83 @@ def nivel_requerido(r: dict) -> int | None:
     return None
 
 
+def indice_recetas(recetas: dict) -> dict[tuple[int, int], list[dict]]:
+    """(profesión, objeto) -> recetas de esa profesión que lo fabrican."""
+    idx: dict[tuple[int, int], list[dict]] = defaultdict(list)
+    for r in recetas.values():
+        if r.get("item") and r.get("reag"):
+            idx[(r.get("prof"), r["item"])].append(r)
+    return idx
+
+
+def coste_unidad(item: int, prof: int, items: dict, vendedor: dict[int, int], idx: dict,
+                 cache: dict, pila: tuple = ()) -> tuple[float | None, str | None, dict]:
+    """Lo más barato entre comprar una unidad y fabricarla con una receta de la misma profesión.
+    Devuelve (precio, fuente 'v'|'s'|'f', {material base: [cantidad por unidad, precio, fuente]})."""
+    clave = (prof, item)
+    if clave in cache:
+        return cache[clave]
+    p, fuente = precio_compra(item, items, vendedor)
+    mejor = (p, fuente, {item: [1.0, p, fuente]}) if p is not None else (None, None, {})
+    if item not in OBJETOS_CON_ENFRIAMIENTO and item not in pila and len(pila) < PROFUNDIDAD_INTERMEDIOS:
+        for r in idx.get(clave, []):
+            total, base, completa = 0.0, {}, True
+            for iid, q in r["reag"]:
+                pu, _, b = coste_unidad(iid, prof, items, vendedor, idx, cache, pila + (item,))
+                if pu is None:
+                    completa = False
+                    break
+                total += pu * q
+                for bid, (bq, bp, bf) in b.items():
+                    acum = base.setdefault(bid, [0.0, bp, bf])
+                    acum[0] += bq * q
+            if not completa:
+                continue
+            cant = r.get("cant") or 1
+            unidad = total / cant
+            # Fabricar solo si ahorra algo de verdad (y si no se puede comprar).
+            if mejor[0] is None or unidad < mejor[0] * 0.97:
+                mejor = (unidad, "f", {k: [v[0] / cant, v[1], v[2]] for k, v in base.items()})
+    if not pila:
+        cache[clave] = mejor
+    return mejor
+
+
+def deposito(item: int, cant: int, items: dict, fichas: dict) -> float:
+    """Depósito de anunciar lo que sale de una fabricación durante 24 h."""
+    vend = (fichas.get(str(item), {}).get("venta") or 0) * cant
+    dep = vend * DEPOSITO_24H
+    # Los objetos (no apilables) van de uno en uno: cada anuncio paga como mínimo 1 plata.
+    if items.get(item, {}).get("tipo") == "i":
+        dep = max(dep, DEPOSITO_MINIMO * cant)
+    return dep
+
+
 def calcular_recetas(estaticos: dict, items: dict, vendedor: dict[int, int]) -> list[dict]:
     nombres_prof = nombres_profesiones(estaticos)
     fichas = estaticos.get("items", {})
+    idx = indice_recetas(estaticos.get("recetas", {}))
+    cache: dict = {}
     salida = []
     for rid, r in estaticos.get("recetas", {}).items():
         if not r.get("item") or not r.get("reag") or r.get("prof") not in nombres_prof:
             continue
-        coste = 0
+        coste = 0.0
         falta = []
         reag = []
+        base: dict[int, list] = {}
+        fabrica_algo = False
         for iid, q in r["reag"]:
-            p, fuente = precio_compra(iid, items, vendedor)
-            reag.append([iid, q, p, fuente if p is not None else None])
+            p, fuente, b = coste_unidad(iid, r["prof"], items, vendedor, idx, cache)
+            reag.append([iid, q, round(p) if p is not None else None, fuente if p is not None else None])
             if p is None:
                 falta.append(iid)
-            else:
-                coste += p * q
+                continue
+            coste += p * q
+            fabrica_algo = fabrica_algo or fuente == "f"
+            for bid, (bq, bp, bf) in b.items():
+                acum = base.setdefault(bid, [0.0, bp, bf])
+                acum[0] += bq * q
         cant = r.get("cant") or 1
         p_venta, origen = precio_venta(r["item"], items)
         venta_ah = p_venta * cant * (1 - COMISION_SUBASTA) if p_venta else None
@@ -495,16 +563,31 @@ def calcular_recetas(estaticos: dict, items: dict, vendedor: dict[int, int]) -> 
         else:
             venta, donde = venta_ah, origen
         info = items.get(r["item"], {})
+        beneficio = venta - coste
+        # Beneficio esperado: si no se vende a la primera se vuelve a anunciar y se pierde el depósito.
+        # Con probabilidad P de venta por anuncio, de media se pierden (1/P - 1) depósitos.
+        if donde == "vendedor":
+            prob, esperado = 100, beneficio
+        elif info.get("rec_prob") is not None:
+            p_ok = max(PROB_VENTA_MINIMA, min(1.0, info["rec_prob"] / 100))
+            prob = round(p_ok * 100)
+            esperado = beneficio - (1 / p_ok - 1) * deposito(r["item"], cant, items, fichas)
+        else:
+            prob, esperado = None, None
         salida.append({
             "id": int(rid), "prof": r["prof"], "profesion": nombres_prof.get(r["prof"], ""),
             "nombre": r.get("nombre", ""), "item": r["item"], "cant": cant,
-            "coste": round(coste), "venta": round(venta), "beneficio": round(venta - coste),
+            "coste": round(coste), "venta": round(venta), "beneficio": round(beneficio),
             "vd": info.get("vd"), "donde": donde, "falta": falta, "reag": reag,
             "sh": info.get("sh"), "sd": info.get("sd"),
             "patron": r.get("patron"), "nivel": nivel_requerido(r),
+            "base": ([[bid, round(v[0], 3), round(v[1]) if v[1] is not None else None, v[2]]
+                      for bid, v in sorted(base.items())] if fabrica_algo and not falta else None),
+            "esperado": round(esperado) if esperado is not None else None, "prob": prob,
         })
     # Primero las recetas con todos los precios conocidos.
-    salida.sort(key=lambda x: (not x["falta"], x["beneficio"]), reverse=True)
+    salida.sort(key=lambda x: (not x["falta"], x["esperado"] if x["esperado"] is not None else x["beneficio"]),
+                reverse=True)
     return salida
 
 
@@ -548,7 +631,9 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
         "-- tramos de precio (respecto al precio habitual): " + ", ".join(f"{x:g}" for x in RATIO_TRAMO),
         "-- r = {{id, profesion, nombre, item, cantidad, coste, venta, beneficio, ventasDia, donde,",
         "--       {{reactivo, cantidad, precioUnidad, 'v'=vendedor|'s'=subasta}, ...}, faltanPrecios,",
-        "--       objetoQueLaEnseña (patrón), nivelDeProfesiónNecesario}, ...}",
+        "--       objetoQueLaEnseña (patrón), nivelDeProfesiónNecesario,",
+        "--       {{materialBase, cantidadPorFabricación, precioUnidad, fuente}} (solo si conviene fabricar intermedios: 'f'),",
+        "--       beneficioEsperado (contando depósitos perdidos), %ventaPorAnuncio}, ...}",
         "ForeverSubastasDatos = {",
         f"  version = 1,",
         f"  casa = {res['casa']},",
@@ -582,11 +667,13 @@ def escribir_lua(ruta: Path, res: dict, recetas: list[dict], estaticos: dict) ->
     for r in recetas:
         nombres_usados.add(r["item"])
         nombres_usados.update(x[0] for x in r["reag"])
+        nombres_usados.update(x[0] for x in (r.get("base") or []))
         if r.get("patron"):
             nombres_usados.add(r["patron"])
         fila = [r["id"], r["prof"], r["nombre"], r["item"], r["cant"], r["coste"], r["venta"],
                 r["beneficio"], r["vd"], r["donde"], [list(x) for x in r["reag"]],
-                len(r["falta"]) if r["falta"] else None, r.get("patron"), r.get("nivel")]
+                len(r["falta"]) if r["falta"] else None, r.get("patron"), r.get("nivel"),
+                r.get("base"), r.get("esperado"), r.get("prob")]
         lineas.append(f"    {_lua_val(fila)},")
     lineas.append("  },")
     lineas.append("  n = {")
@@ -604,12 +691,15 @@ def escribir_csv_recetas(ruta: Path, recetas: list[dict], estaticos: dict) -> No
     ruta.parent.mkdir(parents=True, exist_ok=True)
     with open(ruta, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["profesion", "receta", "coste_oro", "venta_oro", "beneficio_oro", "ventas_dia",
-                    "precio_venta_de", "faltan_precios"])
+        w.writerow(["profesion", "receta", "coste_oro", "venta_oro", "beneficio_oro", "beneficio_esperado_oro",
+                    "prob_venta", "ventas_dia", "precio_venta_de", "faltan_precios", "fabrica_intermedios"])
         for r in recetas:
+            esp = r.get("esperado")
             w.writerow([r["profesion"], r["nombre"], round(r["coste"] / 10000, 4), round(r["venta"] / 10000, 4),
-                        round(r["beneficio"] / 10000, 4), r["vd"] if r["vd"] is not None else "",
-                        r["donde"], len(r["falta"])])
+                        round(r["beneficio"] / 10000, 4), round(esp / 10000, 4) if esp is not None else "",
+                        r.get("prob") if r.get("prob") is not None else "",
+                        r["vd"] if r["vd"] is not None else "", r["donde"], len(r["falta"]),
+                        "sí" if r.get("base") else ""])
 
 
 def main() -> int:
