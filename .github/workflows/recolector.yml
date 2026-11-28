@@ -78,4 +78,4 @@ jobs:
         run: |
           gh release view datos >/dev/null 2>&1 || gh release create datos --title "Datos del addon" \
             --notes "Se actualiza cada hora. El PC descarga Datos.lua de aqui." --latest=false
-          gh release upload datos addon/ForeverSubastas/Datos.lua addon/ForeverSubastas/Nucleo.lua datos/analisis/recetas.csv --clobber
+          gh release upload datos addon/ForeverSubastas/Datos.lua addon/ForeverSubastas/Nucleo.lua addon/ForeverSubastas/actualizar/actualizar.ps1 datos/analisis/recetas.csv --clobber
