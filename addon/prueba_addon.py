@@ -232,6 +232,37 @@ INFO_CUENTAS = v.info._texto
 CUENTAS_1 = v.filas[1].c[1]._texto .. " | " .. tostring(v.filas[1].c[2]._texto) .. " | " .. tostring(v.filas[1].c[6]._texto)
 NUM_OPS = #ForeverSubastas.Cuentas().ops
 
+-- Forever: las facturas no traen cantidad. La compra (ya apuntada al confirmarla) no se cuenta dos veces,
+-- y la cantidad vendida se calcula con el precio al que lo publicaste.
+ev._scripts.OnEvent(ev, "COMMODITY_PRICE_UPDATED", 200, 88600)
+HOOKS.ConfirmCommoditiesPurchase(14047, 200)
+ev._scripts.OnEvent(ev, "COMMODITY_PURCHASE_SUCCEEDED")
+HOOKS.PostCommodity({ id = 14530 }, 1, 94, 1099)
+local facturasAntes = { GetInboxNumItems, GetInboxInvoiceInfo }
+GetInboxNumItems = function() return 2 end
+GetInboxInvoiceInfo = function(i)
+  if i == 1 then return "buyer", "Paño rúnico", "Vendedor", 88600, 88600, 0, 0, 0, 0, 0 end
+  return "seller", "Venda de paño rúnico pesada", "Comprador", 10990, 10990, 100, 550, 0, 0, 0
+end
+ev._scripts.OnEvent(ev, "MAIL_INBOX_UPDATE")
+GetInboxNumItems, GetInboxInvoiceInfo = facturasAntes[1], facturasAntes[2]
+local cu = ForeverSubastas.Cuentas()
+COMPRAS_PANO, VENTA_VENDAS = 0, nil
+for _, op in ipairs(cu.ops) do
+  if op.tipo == "compra" and op.n == "Paño rúnico" then COMPRAS_PANO = COMPRAS_PANO + 1 end
+  if op.tipo == "venta" and op.n == "Venda de paño rúnico pesada" then VENTA_VENDAS = op.c end
+end
+-- Datos antiguos: se arreglan una vez al entrar
+local ahora = time()
+table.insert(cu.ops, { t = ahora - 100, tipo = "compra", item = 4278, n = "Mineral", c = 4, m = 792 })
+table.insert(cu.ops, { t = ahora - 50, tipo = "compra", n = "Mineral", c = 0, m = 792 })
+table.insert(cu.ops, { t = ahora + 5, tipo = "venta", item = 14530, n = "Venda de paño rúnico pesada", c = 0, m = 10441 })
+cu.reparado = nil
+local n1 = #cu.ops
+ForeverSubastas.RepararCuentas()
+REPARADAS = n1 - #cu.ops
+VENTA_REPARADA = cu.ops[#cu.ops].c
+
 v.pestanas.subir._scripts.OnClick(v.pestanas.subir)
 v.botonSubirProf._scripts.OnClick(v.botonSubirProf)
 -- Escaneo completo de Auctionator: precios en vivo y chollos (Flor de paz a 5c, el vendedor paga 10c)
@@ -329,7 +360,8 @@ ev._scripts.OnEvent(ev, "TRADE_SKILL_LIST_UPDATE")
 CD_TRAS_LEER = pjc.cd[12360].h
 -- Tooltip de la receta en la ventana: enfriamiento y beneficio por día
 LINEAS_CD = #LINEAS
--- Botón del minimapa: tooltip con los enfriamientos
+-- Botón del minimapa: tooltip con los enfriamientos (arcanita y legionita comparten enfriamiento: una línea)
+pjc.cd[251290] = { h = 47, fin = pjc.cd[12360].fin, prof = 171, nombre = "Transmutar: legionita" }
 local bm = ForeverSubastas.botonMinimapa
 local antes = #LINEAS
 bm._scripts.OnEnter(bm)
@@ -374,6 +406,11 @@ def main() -> int:
     print("Mis cuentas:", g.FILAS_CUENTAS, "filas ·", g.CUENTAS_1)
     print("   ", g.INFO_CUENTAS)
     print("Operaciones registradas:", g.NUM_OPS)
+    print("Facturas sin cantidad: compras de paño", g.COMPRAS_PANO, "· vendas vendidas", g.VENTA_VENDAS,
+          "· reparadas", g.REPARADAS, "· venta antigua", g.VENTA_REPARADA)
+    assert g.COMPRAS_PANO == 1, "la compra no debe contarse dos veces (confirmación + factura)"
+    assert g.VENTA_VENDAS == 10, "la cantidad vendida debe salir del precio publicado"
+    assert g.REPARADAS == 1 and g.VENTA_REPARADA == 10, "no arregló los datos antiguos"
     print("Chollos:", g.FILAS_CHOLLOS, "filas ·", g.CHOLLOS_1, "·", g.INFO_CHOLLOS)
     print("Lista de chollos:", g.LISTA_CHOLLOS, "· pendientes de vender:", g.PENDIENTES_2447,
           "· vendidos mezclados/solos:", g.VENDIDOS_MEZCLA, g.VENDIDOS_SOLO)
@@ -387,6 +424,7 @@ def main() -> int:
     print("   /fsub cd:", g.CD_LISTA)
     print("   aviso:", g.AVISOS_1, g.AVISOS_2, g.AVISO_TEXTO, "· tras lanzar:", g.CD_TRAS_LANZAR, "h · tras leer:", g.CD_TRAS_LEER)
     print("   minimapa:", g.MINIMAPA_CD, "· profesión corregida:", not g.SUBIR_197, g.CD_PROF)
+    assert g.MINIMAPA_CD and "arcanita o legionita" in g.MINIMAPA_CD, "debería juntar los enfriamientos compartidos"
     assert g.MINIMAPA_CD and "Suci" in g.MINIMAPA_CD, "el botón del minimapa no muestra los enfriamientos"
     assert not g.MINIMAPA_ORO, "el minimapa no debe mostrar los enfriamientos de 1 h"
     assert not g.SUBIR_197 and g.CD_PROF == 171, "debería detectar que la lista leída es de Alquimia"

@@ -452,21 +452,47 @@ local function NombreCorto(nombre)
     return ((nombre or "?"):gsub("^Transmutar: ", ""))
 end
 
--- Resumen de los enfriamientos largos de este personaje: "arcanita lista, Tela lunar 3d 2h".
+-- Enfriamientos largos de un personaje, juntando los que se comparten (arcanita y legionita acaban
+-- a la vez: el juego les pone el mismo enfriamiento). Devuelve {nombre, fin, entradas} ordenados.
+local function GruposEnfriamiento(pj)
+    local porClave, grupos = {}, {}
+    for item, e in pairs(pj.cd or {}) do
+        if (e.h or CD_AVISO_HORAS) >= CD_AVISO_HORAS then
+            local clave = tostring(e.prof or 0) .. ":" .. math.floor(e.fin or 0)
+            local g = porClave[clave]
+            if not g then
+                g = { nombres = {}, fin = e.fin or 0, entradas = {} }
+                porClave[clave] = g
+                table.insert(grupos, g)
+            end
+            table.insert(g.nombres, e.nombre or NombreObjeto(item))
+            table.insert(g.entradas, e)
+        end
+    end
+    for _, g in ipairs(grupos) do
+        table.sort(g.nombres)
+        if #g.nombres > 1 then
+            local cortos = {}
+            for i, n in ipairs(g.nombres) do cortos[i] = i == 1 and n or NombreCorto(n) end
+            g.nombre = table.concat(cortos, " o ")
+        else
+            g.nombre = g.nombres[1]
+        end
+    end
+    table.sort(grupos, function(x, y) return x.fin < y.fin end)
+    return grupos
+end
+
+-- Resumen de los enfriamientos largos de este personaje: "arcanita o legionita lista, Tela lunar 3d 2h".
 local function ResumenEnfriamientos(pj)
     local ahora = time and time() or 0
-    local orden = {}
-    for item, e in pairs(pj.cd or {}) do
-        if (e.h or 0) >= CD_AVISO_HORAS then table.insert(orden, { item = item, e = e }) end
-    end
-    if #orden == 0 then return nil end
-    table.sort(orden, function(a, b) return (a.e.fin or 0) < (b.e.fin or 0) end)
     local partes = {}
-    for _, x in ipairs(orden) do
-        local resto = (x.e.fin or 0) - ahora
-        table.insert(partes, NombreCorto(x.e.nombre or NombreObjeto(x.item)) .. " " ..
+    for _, g in ipairs(GruposEnfriamiento(pj)) do
+        local resto = g.fin - ahora
+        table.insert(partes, NombreCorto(g.nombre) .. " " ..
             (resto <= 0 and (VERDE .. "lista" .. FIN) or (NARANJA .. TiempoCorto(resto) .. FIN)))
     end
+    if #partes == 0 then return nil end
     return table.concat(partes, ", ")
 end
 
@@ -482,11 +508,15 @@ local function AvisarEnfriamientos()
     local listos = {}
     local mio = ClavePersonaje()
     for clave, pj in pairs(db.pj or {}) do
-        for item, e in pairs(pj.cd or {}) do
-            if (e.h or 0) >= CD_AVISO_HORAS and e.fin and e.fin <= ahora and e.avisado ~= e.fin then
-                e.avisado = e.fin
-                table.insert(listos, (e.nombre or NombreObjeto(item)) ..
-                    (clave ~= mio and (GRIS .. " (" .. NombrePj(clave) .. ")" .. FIN) or ""))
+        for _, g in ipairs(GruposEnfriamiento(pj)) do
+            local nuevo = false
+            for _, e in ipairs(g.entradas) do
+                if e.fin and e.fin <= ahora and e.avisado ~= e.fin then
+                    e.avisado, nuevo = e.fin, true
+                end
+            end
+            if nuevo then
+                table.insert(listos, g.nombre .. (clave ~= mio and (GRIS .. " (" .. NombrePj(clave) .. ")" .. FIN) or ""))
             end
         end
     end
@@ -548,11 +578,8 @@ local function TooltipMinimapa(boton)
     local ahora = time and time() or 0
     local filas = {}
     for clave, pj in pairs(db.pj or {}) do
-        for item, e in pairs(pj.cd or {}) do
-            if (e.h or CD_AVISO_HORAS) >= CD_AVISO_HORAS then
-                table.insert(filas, { fin = e.fin or 0, izq = (e.nombre or NombreObjeto(item)) .. GRIS .. "  " ..
-                    NombrePj(clave) .. FIN })
-            end
+        for _, g in ipairs(GruposEnfriamiento(pj)) do
+            table.insert(filas, { fin = g.fin, izq = g.nombre .. GRIS .. "  " .. NombrePj(clave) .. FIN })
         end
     end
     table.sort(filas, function(a, b) return a.fin < b.fin end)
@@ -909,6 +936,61 @@ end
 -- Registro de operaciones (Mis cuentas)
 ---------------------------------------------------------------------------
 
+-- La compra en la subasta ya se apunta al confirmarla; luego llega su factura por correo con el mismo
+-- importe: no hay que contarla dos veces.
+local function CompraYaAnotada(cu, item, nombre, importe, ahora)
+    for i = #cu.ops, 1, -1 do
+        local op = cu.ops[i]
+        if ahora - (op.t or 0) > 3 * 86400 then break end
+        if op.tipo == "compra" and not op.fac and op.m == importe and (op.c or 0) > 0
+            and ((item and op.item == item) or (nombre and op.n == nombre)) then
+            op.fac = true
+            return true
+        end
+    end
+    return false
+end
+
+-- En Forever las facturas de venta no traen la cantidad: se calcula con el precio al que lo publicaste.
+local function CantidadVendida(cu, item, nombre, bruto, hasta)
+    if not bruto or bruto <= 0 then return nil end
+    for i = #cu.ops, 1, -1 do
+        local op = cu.ops[i]
+        if op.tipo == "publica" and (op.t or 0) <= hasta and (op.c or 0) > 0 and (op.m or 0) > 0
+            and ((item and op.item == item) or (nombre and op.n == nombre)) then
+            return math.max(1, math.floor(bruto / (op.m / op.c) + 0.5))
+        end
+    end
+    return nil
+end
+
+-- Arregla lo apuntado antes de esta versión: compras contadas dos veces y ventas con cantidad 0.
+local function RepararCuentas()
+    local cu = Cuentas()
+    if cu.reparado then return end
+    local limpias = {}
+    for i, op in ipairs(cu.ops) do
+        local duplicada = false
+        if op.tipo == "compra" and (op.c or 0) == 0 then
+            for j = math.max(1, i - 40), i - 1 do
+                local o = cu.ops[j]
+                if o.tipo == "compra" and not o.fac and o.m == op.m and (o.c or 0) > 0 and (op.t or 0) - (o.t or 0) < 3 * 86400
+                    and ((op.item and o.item == op.item) or (op.n and o.n == op.n)) then
+                    o.fac, duplicada = true, true
+                    break
+                end
+            end
+            if not duplicada then op.c = 1 end
+        elseif op.tipo == "venta" and (op.c or 0) == 0 then
+            op.c = CantidadVendida({ ops = limpias }, op.item, op.n, op.bruto or op.m, op.t or 0) or 0
+        end
+        if not duplicada then table.insert(limpias, op) end
+    end
+    cu.ops = limpias
+    cu.reparado = 1
+end
+FS.RepararCuentas = RepararCuentas
+
 local function LeerFacturas()
     if not (GetInboxNumItems and GetInboxInvoiceInfo and GetInboxHeaderInfo) then return end
     local cu = Cuentas()
@@ -924,10 +1006,14 @@ local function LeerFacturas()
             if not visto then
                 cu.vistos[base .. "|" .. enviado] = ahora
                 local item = IdPorNombre(nombre)
+                local cant = (cantidad and cantidad > 0) and cantidad or nil
                 if tipo == "seller" then
-                    Anotar("venta", item, nombre, cantidad or 1, (puja or 0) - (comision or 0))
-                else
-                    Anotar("compra", item, nombre, cantidad or 1, puja or 0)
+                    cant = cant or CantidadVendida(cu, item, nombre, puja, ahora) or 0
+                    Anotar("venta", item, nombre, cant, (puja or 0) - (comision or 0))
+                    local op = cu.ops[#cu.ops]
+                    if op then op.bruto = puja end
+                elseif not CompraYaAnotada(cu, item, nombre, puja or 0, ahora) then
+                    Anotar("compra", item, nombre, cant or 1, puja or 0)
                 end
             end
         end
@@ -2295,6 +2381,7 @@ eventos:SetScript("OnEvent", function(_, evento, arg1, arg2, arg3)
         else
             Imprimir("no encuentro Datos.lua.")
         end
+        pcall(RepararCuentas)
         pcall(CrearBotonMinimapa)
         pcall(AvisarEnfriamientos)
         -- Y mientras juegas, se mira cada 5 minutos si alguno ha quedado listo.
