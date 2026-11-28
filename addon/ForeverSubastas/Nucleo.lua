@@ -456,18 +456,25 @@ local function LeerInstructor()
     local sub = GetSubZoneText and GetSubZoneText() or ""
     if sub ~= "" and sub ~= zona then zona = sub .. ", " .. zona end
     local n = 0
+    local profesion
     for i = 1, GetNumTrainerServices() or 0 do
         local nombre, _, tipo = GetTrainerServiceInfo(i)
         if nombre and tipo ~= "header" then
-            local nivel
+            local nivel, habilidad
             if GetTrainerServiceSkillReq then
-                local _, niv = GetTrainerServiceSkillReq(i)
-                nivel = niv
+                habilidad, nivel = GetTrainerServiceSkillReq(i)
             end
+            profesion = profesion or habilidad
             local coste = GetTrainerServiceCost and GetTrainerServiceCost(i) or nil
-            db.aprender[nombre] = { npc = npc, zona = zona, nivel = nivel, coste = coste, t = time and time() or 0 }
+            db.aprender[nombre] = { npc = npc, zona = zona, nivel = nivel, coste = coste, prof = habilidad,
+                t = time and time() or 0 }
             n = n + 1
         end
+    end
+    -- Instructores visitados por profesión: si una receta no está en su lista, es que no la enseña.
+    if profesion and n > 0 then
+        db.instructores = db.instructores or {}
+        db.instructores[npc] = { prof = profesion, zona = zona, t = time and time() or 0 }
     end
     leyendoInstructor = false
     return n
@@ -1545,6 +1552,59 @@ local function IndicePatrones()
     return idx
 end
 
+-- Si el juego y QuestieDB no coinciden en el número de la receta, se busca el patrón por su nombre.
+local PREFIJOS_PATRON = { "Receta: ", "Patrón: ", "Diseño: ", "Plano: ", "Esquema: ", "Fórmula: ", "Manual: " }
+local function PatronesPorNombre(nombreReceta)
+    local IDB = _G.ItemDB
+    local salida = {}
+    if not (IDB and IDB.IdsByName and nombreReceta) then return salida end
+    for _, pre in ipairs(PREFIJOS_PATRON) do
+        local ok, ids = pcall(IDB.IdsByName, pre .. nombreReceta)
+        if ok and type(ids) == "table" then
+            for _, id in ipairs(ids) do table.insert(salida, id) end
+        end
+    end
+    return salida
+end
+
+-- Palabras con las que QuestieDB nombra a los instructores de cada profesión (en español o en inglés).
+local CLAVES_INSTRUCTOR = {
+    [171] = { "alquim", "alchem" }, [164] = { "herrer", "blacksmith" }, [185] = { "cocin", "cook" },
+    [333] = { "encantam", "enchant" }, [202] = { "ingenier", "engineer" }, [129] = { "primeros auxilios", "first aid" },
+    [356] = { "pesca", "fishing" }, [182] = { "herbor", "herbal" }, [165] = { "peleter", "leatherwork" },
+    [186] = { "miner", "mining" }, [393] = { "desoll", "skinning" }, [197] = { "sastre", "tailor" },
+}
+local indiceInstructores
+-- prof -> { PNJ que la enseñan }, con una sola pasada por QuestieDB.
+local function IndiceInstructores()
+    if indiceInstructores ~= nil then return indiceInstructores or nil end
+    indiceInstructores = false
+    local NDB = _G.NpcDB
+    if not (NDB and NDB.GetAllIds and NDB.subName) then return nil end
+    local ok, ids = pcall(NDB.GetAllIds)
+    if not ok or type(ids) ~= "table" then return nil end
+    local idx = {}
+    for _, id in ipairs(ids) do
+        local oks, sub = pcall(NDB.subName, id)
+        if oks and type(sub) == "string" then
+            local s = sub:lower()
+            if s:find("instruct") or s:find("trainer") then
+                for prof, claves in pairs(CLAVES_INSTRUCTOR) do
+                    for _, clave in ipairs(claves) do
+                        if s:find(clave, 1, true) then
+                            idx[prof] = idx[prof] or {}
+                            table.insert(idx[prof], id)
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    indiceInstructores = idx
+    return idx
+end
+
 local function NombreZona(areaId)
     if not areaId then return "?" end
     if C_Map and C_Map.GetAreaInfo then
@@ -1590,6 +1650,28 @@ end
 local function TextoLugar(l)
     if l.x then return string.format("%s (%s %.0f, %.0f)", l.nombre, l.zona, l.x, l.y) end
     return l.nombre .. " (" .. l.zona .. ")"
+end
+
+-- Instructores de tu facción para una profesión: primero los de tu zona, luego por nombre de zona.
+local cacheInstructores = {}
+local function InstructoresDe(prof)
+    local aqui = GetZoneText and GetZoneText() or ""
+    local clave = tostring(prof) .. "|" .. aqui
+    if cacheInstructores[clave] then return cacheInstructores[clave] end
+    local idx = IndiceInstructores()
+    local lista = {}
+    for _, npc in ipairs(idx and idx[prof] or {}) do
+        local l = LugarPnj(npc)
+        if l and l.x then table.insert(lista, l) end
+    end
+    table.sort(lista, function(a, b)
+        local ax, bx = a.zona == aqui and 0 or 1, b.zona == aqui and 0 or 1
+        if ax ~= bx then return ax < bx end
+        if a.zona ~= b.zona then return a.zona < b.zona end
+        return a.nombre < b.nombre
+    end)
+    cacheInstructores[clave] = lista
+    return lista
 end
 
 -- Vendedores, enemigos que lo sueltan y misiones que lo dan como recompensa.
@@ -1681,6 +1763,9 @@ local function InfoAprender(r, dato)
             if not vistos[id] then table.insert(patrones, id); vistos[id] = true end
         end
     end
+    for _, id in ipairs(PatronesPorNombre(r[R_NOMBRE])) do
+        if not vistos[id] then table.insert(patrones, id); vistos[id] = true end
+    end
     local lugarMapa
     for k = 1, math.min(2, #patrones) do
         local id = patrones[k]
@@ -1704,7 +1789,32 @@ local function InfoAprender(r, dato)
     if #patrones == 0 and not inst and not (dato and dato.f) then
         corto = "instructor?"
         table.insert(lineas, { "Sin patrón conocido", "seguramente la enseña el instructor" })
-        table.insert(lineas, { GRIS .. "Visita al instructor de la profesión y el addon apuntará a qué nivel la enseña." .. FIN, "" })
+        -- Instructores de esta profesión ya visitados que no la tienen en su lista.
+        local nombreProf = D.p and D.p[r[R_PROF]]
+        local noLaEnsenan = {}
+        for npc, x in pairs(db.instructores or {}) do
+            if nombreProf and x.prof == nombreProf then table.insert(noLaEnsenan, npc) end
+        end
+        if #noLaEnsenan > 0 then
+            table.sort(noLaEnsenan)
+            table.insert(lineas, { "   No la enseña", table.concat(noLaEnsenan, ", ") })
+            table.insert(lineas, { GRIS .. "   Puede ser de un instructor de más rango o de un patrón que QuestieDB no conoce." .. FIN, "" })
+        end
+        local yaVistos = {}
+        for _, npc in ipairs(noLaEnsenan) do yaVistos[npc] = true end
+        local instructores = {}
+        for _, l in ipairs(InstructoresDe(r[R_PROF])) do
+            if not yaVistos[l.nombre] then table.insert(instructores, l) end
+        end
+        for k = 1, math.min(4, #instructores) do
+            table.insert(lineas, { k == 1 and "Instructores de tu facción" or "", TextoLugar(instructores[k]) })
+        end
+        if #instructores > 0 then
+            lugarMapa = lugarMapa or instructores[1]
+            table.insert(lineas, { GRIS .. "Mayúsculas + clic: marcar el primero en el mapa. Al hablar con él, el addon apunta a qué nivel la enseña." .. FIN, "" })
+        else
+            table.insert(lineas, { GRIS .. "Al hablar con un instructor de la profesión, el addon apunta a qué nivel la enseña." .. FIN, "" })
+        end
     end
     if dato and dato.f then
         table.insert(lineas, { "Fuente según el juego", SinFormato(dato.f) })
@@ -1719,6 +1829,7 @@ local function InfoAprender(r, dato)
     end
     return corto or "aprender", lineas, nivel, lugarMapa
 end
+FS.InfoAprender = InfoAprender
 
 local function NombreRequisito(dato)
     if not (dato and dato.req) then return "" end
@@ -2149,7 +2260,8 @@ local function Refrescar()
                 mejor and (" · lo más barato: " .. mejor.r[R_NOMBRE] .. " a " .. Moneda(mejor.porPunto) .. " por punto") or "",
                 ocultas > 0 and (GRIS .. string.format(" · %d ocultas por nivel", ocultas) .. FIN) or "")
         end
-        pie = "Clic: lista de la compra con la cantidad sugerida. Visita a tu instructor una vez para saber nivel y coste de lo que enseña."
+        pie = "Clic: lista de la compra con la cantidad sugerida. Pasa el ratón por una receta para ver dónde se aprende " ..
+            "(vendedor o instructor) y pulsa Mayúsculas + clic para marcarlo en el mapa."
     elseif modo == "chollos" then
         local hayVivo
         lista, hayVivo = ListaChollos()

@@ -123,10 +123,20 @@ ItemDB = {
   questRewards = function(id) return nil end,
 }
 NpcDB = {
-  name = function(id) return id == 500 and "Alquimista Mallory" or "Vendedor de la Horda" end,
+  GetAllIds = function() return { 500, 501, 502, 503 } end,
+  subName = function(id)
+    if id == 502 then return "Instructora de alquimia" end
+    if id == 503 then return "Artisan Alchemy Trainer" end
+    return "Proveedora de alquimia"
+  end,
+  name = function(id)
+    if id == 502 then return "Lilyssia Nightbreeze" end
+    if id == 503 then return "Kylanna Windwhisper" end
+    return id == 500 and "Alquimista Mallory" or "Vendedor de la Horda"
+  end,
   spawns = function(id) return { [1519] = { { 50.2, 60.7 } } } end,
   zoneID = function(id) return 1519 end,
-  friendlyToFaction = function(id) return id == 500 and "AH" or "H" end,
+  friendlyToFaction = function(id) return (id == 500 or id == 502 or id == 503) and "AH" or "H" end,
 }
 QuestDB = { name = function(id) return "Una misión" end }
 LibQuestieDB = { EraToForever = function(a, x, y) return x + 1, y + 1 end,
@@ -201,6 +211,12 @@ GetZoneText = function() return "Ventormenta" end
 GetSubZoneText = function() return "Distrito de los Magos" end
 ev._scripts.OnEvent(ev, "TRAINER_SHOW")
 v.pestanas.subir._scripts.OnClick(v.pestanas.subir)
+-- Receta sin patrón conocido: dice qué instructores hay y cuáles ya visitaste sin que la enseñen
+local cortoI, lineasI, _, lugarI = ForeverSubastas.InfoAprender({ 1, 171, "Receta inventada", 99999 }, nil)
+local partes = {}
+for _, l in ipairs(lineasI) do table.insert(partes, l[1] .. " | " .. l[2]) end
+INSTRUCTOR_TT = cortoI .. " || " .. table.concat(partes, " || ")
+INSTRUCTOR_MAPA = lugarI and lugarI.nombre
 SUBIR_APRENDER = v.filas[1].c[7]._texto .. " / " .. tostring(v.filas[2].c[7]._texto)
 v.filas[2]._scripts.OnEnter(v.filas[2])
 SHIFT = true
@@ -482,6 +498,11 @@ def main() -> int:
     assert g.TOOLTIP_ESP, "falta el beneficio esperado en el tooltip"
     print("   tooltip:", g.TOOLTIP_CD2, "·", g.TOOLTIP_CD)
     assert g.TOOLTIP_CD and g.TOOLTIP_CD2, "el tooltip de la receta no muestra el enfriamiento ni el beneficio por día"
+    print("Instructores:", g.INSTRUCTOR_TT and g.INSTRUCTOR_TT[-400:])
+    assert g.INSTRUCTOR_TT and "Instructores de tu facción | Kylanna Windwhisper" in g.INSTRUCTOR_TT, "debería listar los instructores"
+    assert "Instructores de tu facción | Lilyssia" not in g.INSTRUCTOR_TT, "no debe proponer el instructor que ya sabes que no la enseña"
+    assert "No la enseña | Lilyssia Nightbreeze" in g.INSTRUCTOR_TT, "debería decir que el instructor visitado no la enseña"
+    assert g.INSTRUCTOR_MAPA == "Kylanna Windwhisper", "Mayúsculas + clic debería marcar al instructor"
     assert g.FILTRO_NO_DISPONIBLE == 1, "al abrir el instructor debería marcar el filtro No disponible"
     assert g.CD_FIN_OK, "no guardó el enfriamiento de la arcanita"
     assert g.CD_ORO == 1, "debería apuntar la transmutación de hierro a oro (enfriamiento conocido)"
