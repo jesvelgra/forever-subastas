@@ -193,6 +193,9 @@ GetNumTrainerServices = function() return 2 end
 GetTrainerServiceInfo = function(i) return i == 1 and "Poción menor de maná" or "Elixir de defensa", nil, "available" end
 GetTrainerServiceSkillReq = function(i) return "Alquimia", i == 1 and 25 or 250, true end
 GetTrainerServiceCost = function(i) return 500 end
+FILTRO_NO_DISPONIBLE = nil
+GetTrainerServiceTypeFilter = function(t) if t == "unavailable" then return FILTRO_NO_DISPONIBLE end return 1 end
+SetTrainerServiceTypeFilter = function(t, v) if t == "unavailable" then FILTRO_NO_DISPONIBLE = v end end
 UnitName = function(u) if u == "npc" then return "Lilyssia Nightbreeze" end return "Suci Va" end
 GetZoneText = function() return "Ventormenta" end
 GetSubZoneText = function() return "Distrito de los Magos" end
@@ -479,6 +482,7 @@ def main() -> int:
     assert g.TOOLTIP_ESP, "falta el beneficio esperado en el tooltip"
     print("   tooltip:", g.TOOLTIP_CD2, "·", g.TOOLTIP_CD)
     assert g.TOOLTIP_CD and g.TOOLTIP_CD2, "el tooltip de la receta no muestra el enfriamiento ni el beneficio por día"
+    assert g.FILTRO_NO_DISPONIBLE == 1, "al abrir el instructor debería marcar el filtro No disponible"
     assert g.CD_FIN_OK, "no guardó el enfriamiento de la arcanita"
     assert g.CD_ORO == 1, "debería apuntar la transmutación de hierro a oro (enfriamiento conocido)"
     assert g.FILA_ARCANITA and "20h" in g.FILA_ARCANITA, "Qué fabricar no muestra el enfriamiento"

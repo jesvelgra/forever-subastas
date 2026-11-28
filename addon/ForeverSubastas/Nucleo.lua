@@ -1704,7 +1704,7 @@ local function InfoAprender(r, dato)
     if #patrones == 0 and not inst and not (dato and dato.f) then
         corto = "instructor?"
         table.insert(lineas, { "Sin patrón conocido", "seguramente la enseña el instructor" })
-        table.insert(lineas, { GRIS .. "Si en el instructor no aparece, en su ventana abre Configuración y marca \"No disponible\"." .. FIN, "" })
+        table.insert(lineas, { GRIS .. "Visita al instructor de la profesión y el addon apuntará a qué nivel la enseña." .. FIN, "" })
     end
     if dato and dato.f then
         table.insert(lineas, { "Fuente según el juego", SinFormato(dato.f) })
@@ -2429,8 +2429,12 @@ local function CrearVentana()
         f.filas[i] = fila
     end
 
+    -- El pie puede ocupar hasta 3 líneas: crece hacia arriba, en el hueco que queda bajo las filas.
     f.pie = Texto(f, "GameFontHighlightSmall", 710)
-    f.pie:SetPoint("BOTTOMLEFT", 16, 12)
+    f.pie:SetWordWrap(true)
+    if f.pie.SetMaxLines then f.pie:SetMaxLines(3) end
+    f.pie:SetJustifyV("BOTTOM")
+    f.pie:SetPoint("BOTTOMLEFT", 16, 10)
 
     f:EnableMouseWheel(true)
     f:SetScript("OnMouseWheel", function(_, delta)
@@ -2592,6 +2596,12 @@ eventos:SetScript("OnEvent", function(_, evento, arg1, arg2, arg3)
         pcall(LeerRecetasConocidas)
         pcall(CrearBotonesExternos)
     elseif evento == "TRAINER_SHOW" or evento == "TRAINER_UPDATE" then
+        -- El instructor solo lista lo que ya puedes aprender salvo que su filtro "No disponible" esté marcado:
+        -- se marca solo para apuntar también lo que enseña a más nivel (sale en rojo en su lista).
+        if evento == "TRAINER_SHOW" and GetTrainerServiceTypeFilter and SetTrainerServiceTypeFilter then
+            local okF, activo = pcall(GetTrainerServiceTypeFilter, "unavailable")
+            if okF and not activo then pcall(SetTrainerServiceTypeFilter, "unavailable", 1) end
+        end
         local ok, n = pcall(LeerInstructor)
         if ok and n and n > 0 and evento == "TRAINER_SHOW" then
             Imprimir("apuntado lo que enseña este instructor (" .. n .. " entradas) para la pestaña Subir profesión.")
